@@ -5,7 +5,9 @@
   'use strict';
 
   var DEFAULT_WORKSPACE = 'myWorkspace';
-  var DEFAULT_SEAT = 2;
+  var MIN_SEATS = 2;
+  var MAX_SEATS = 999;
+  var BILLING_LABELS = { month: '按月付', year: '按年付' };
   var MIN_TOKEN_LENGTH = 40;
   var API_BASE = (typeof location !== 'undefined' && location.hostname === 'localhost')
     ? 'http://127.0.0.1:8787'
@@ -84,6 +86,8 @@
       dom.toolContent.querySelectorAll('input, textarea, button'),
       function (control) { control.disabled = !cdkVerified; }
     );
+    if (dom.countryTrigger) dom.countryTrigger.disabled = !cdkVerified || !configurationReady;
+    updateSeatControls();
     updateGenerateState();
   }
 
@@ -223,77 +227,135 @@
     return { label: '待配置代理', state: 'missing' };
   }
 
-  function renderCountryCards() {
-    dom.countryCards.textContent = '';
-    dom.countryCards.classList.remove('is-loading');
-    dom.countryCards.setAttribute('aria-busy', 'false');
+  function countrySearchText(country) {
+    return [country.name, country.code, country.currency, country.pinyin, country.localPrice]
+      .join(' ')
+      .toLowerCase();
+  }
 
-    var defaultCode = appConfig.defaultCountry;
-    appConfig.countries.forEach(function (country, index) {
-      var inputId = 'country-' + country.code.toLowerCase();
+  function sortedCountries() {
+    return (appConfig.countries || []).slice().sort(function (left, right) {
+      return Number(left.usdPrice) - Number(right.usdPrice);
+    });
+  }
+
+  function countryFlag(country) {
+    return el('img', {
+      cls: 'country-flag',
+      attrs: {
+        src: 'https://flagcdn.com/w80/' + country.code.toLowerCase() + '.png',
+        alt: country.name + '国旗',
+        width: '42',
+        height: '28'
+      }
+    });
+  }
+
+  function renderCountryTrigger() {
+    if (!selectedCountry) return;
+    var status = proxyStatusFor(selectedCountry);
+    dom.countryTrigger.textContent = '';
+    dom.countryTrigger.appendChild(countryFlag(selectedCountry));
+    dom.countryTrigger.appendChild(el('span', {
+      cls: 'country-trigger-copy',
+      children: [
+        el('strong', { text: selectedCountry.name + '（' + selectedCountry.code + '）' }),
+        el('small', { text: '结算货币 ' + selectedCountry.currency + ' · 本地 ' + selectedCountry.localPrice })
+      ]
+    }));
+    dom.countryTrigger.appendChild(el('span', {
+      cls: 'country-trigger-price',
+      children: [
+        el('strong', { text: '$' + selectedCountry.usdPrice }),
+        el('small', { text: '美元参考' })
+      ]
+    }));
+    dom.countryTrigger.appendChild(el('span', {
+      cls: 'proxy-state',
+      text: status.label,
+      attrs: { 'data-state': status.state }
+    }));
+    dom.countryTrigger.appendChild(el('span', { cls: 'country-chevron', attrs: { 'aria-hidden': 'true' } }));
+  }
+
+  function renderCountryOptions(query) {
+    var normalizedQuery = String(query || '').trim().toLowerCase();
+    var matches = sortedCountries().filter(function (country) {
+      return !normalizedQuery || countrySearchText(country).indexOf(normalizedQuery) >= 0;
+    });
+    dom.countryOptions.textContent = '';
+    if (!matches.length) {
+      dom.countryOptions.appendChild(el('div', { cls: 'country-empty', text: '没有找到匹配的国家或货币' }));
+      return;
+    }
+    matches.forEach(function (country) {
       var status = proxyStatusFor(country);
-      var input = el('input', {
-        cls: 'country-radio',
+      var option = el('button', {
+        cls: 'country-option-row',
         attrs: {
-          id: inputId,
-          type: 'radio',
-          name: 'country',
-          value: country.code,
-          'aria-describedby': inputId + '-detail'
-        }
-      });
-      input.checked = country.code === defaultCode || (!defaultCode && index === 0);
-      input.disabled = !cdkVerified;
-
-      var card = el('span', {
-        cls: 'country-card',
+          type: 'button',
+          role: 'option',
+          'aria-selected': String(Boolean(selectedCountry && selectedCountry.code === country.code)),
+          'data-country': country.code
+        },
         children: [
+          countryFlag(country),
           el('span', {
-            cls: 'country-card-top',
+            cls: 'country-option-identity',
             children: [
-              el('span', {
-                cls: 'country-identity',
-                children: [
-                  el('span', { cls: 'country-flag', text: country.flag, attrs: { 'aria-hidden': 'true' } }),
-                  el('span', { cls: 'country-name', text: country.name })
-                ]
-              }),
-              el('span', {
-                cls: 'proxy-state',
-                text: status.label,
-                attrs: { 'data-state': status.state }
-              })
+              el('strong', { text: country.name + '（' + country.code + '）' }),
+              el('small', { text: country.currency + ' · ' + status.label, attrs: { 'data-state': status.state } })
             ]
           }),
           el('span', {
-            cls: 'country-detail',
-            text: country.code + ' · ' + country.currency + ' · 约 ' + country.currency + ' ' + country.price + '/月',
-            attrs: { id: inputId + '-detail' }
+            cls: 'country-option-price',
+            children: [
+              el('strong', { text: '$' + country.usdPrice }),
+              el('small', { text: country.localPrice })
+            ]
           }),
-          el('span', { cls: 'country-seat', text: '2 席起' }),
-          el('span', { cls: 'country-check', text: '✓', attrs: { 'aria-hidden': 'true' } })
+          el('span', { cls: 'country-option-check', text: '✓', attrs: { 'aria-hidden': 'true' } })
         ]
       });
-
-      var label = el('label', {
-        cls: 'country-option',
-        attrs: { for: inputId },
-        children: [input, card]
-      });
-      input.addEventListener('change', function () {
-        if (!input.checked) return;
+      option.disabled = !cdkVerified;
+      option.addEventListener('click', function () {
         selectCountry(country);
         clearResult();
       });
-      dom.countryCards.appendChild(label);
-      if (input.checked) selectedCountry = country;
+      dom.countryOptions.appendChild(option);
     });
+  }
 
-    updateCountrySelection();
+  function closeCountryMenu() {
+    dom.countryMenu.hidden = true;
+    dom.countryTrigger.setAttribute('aria-expanded', 'false');
+    dom.countryPicker.classList.remove('is-open');
+  }
+
+  function openCountryMenu() {
+    if (!cdkVerified || !configurationReady) return;
+    dom.countrySearch.value = '';
+    renderCountryOptions('');
+    dom.countryMenu.hidden = false;
+    dom.countryTrigger.setAttribute('aria-expanded', 'true');
+    dom.countryPicker.classList.add('is-open');
+    dom.countrySearch.focus();
   }
 
   function selectCountry(country) {
     selectedCountry = country;
+    renderCountryTrigger();
+    renderCountryOptions(dom.countrySearch.value);
+    updateCountrySelection();
+    closeCountryMenu();
+  }
+
+  function renderCountryPicker() {
+    dom.countryPicker.classList.remove('is-loading');
+    var defaultCode = appConfig.defaultCountry;
+    selectedCountry = appConfig.countries.find(function (country) { return country.code === defaultCode; }) || appConfig.countries[0];
+    renderCountryTrigger();
+    renderCountryOptions('');
     updateCountrySelection();
   }
 
@@ -346,25 +408,18 @@
         if (!data.cdkServiceReady) {
           invalidateCdk('cdk_service_not_configured');
         }
-        if (Number.isInteger(data.minSeats) && data.minSeats > 0) {
-          dom.seatQuantity.min = String(data.minSeats);
-          if (Number(dom.seatQuantity.value) < data.minSeats) {
-            dom.seatQuantity.value = String(data.minSeats);
-          }
-        }
-        renderCountryCards();
+        renderCountryPicker();
         updateProxyOverview();
         configurationReady = true;
+        dom.countryTrigger.disabled = !cdkVerified;
+        updateSeatControls();
         updateGenerateState();
       })
       .catch(function (error) {
-        dom.countryCards.textContent = '';
-        dom.countryCards.classList.remove('is-loading');
-        dom.countryCards.setAttribute('aria-busy', 'false');
-        dom.countryCards.appendChild(el('div', {
-          cls: 'configuration-error',
-          text: '无法读取国家与代理配置：' + (error && error.message ? error.message : String(error))
-        }));
+        dom.countryPicker.classList.remove('is-loading');
+        dom.countryTrigger.textContent = '无法读取国家与代理配置：' + (error && error.message ? error.message : String(error));
+        dom.countryTrigger.disabled = true;
+        closeCountryMenu();
         dom.proxyOverview.textContent = '配置读取失败';
         dom.proxyOverview.dataset.state = 'invalid';
         configurationReady = false;
@@ -409,16 +464,53 @@
   }
   var DEVICE_ID = generateDeviceId();
 
+  function readSeatCount(input) {
+    return Number(input.value);
+  }
+
+  function selectedBillingPeriod() {
+    var selected = document.querySelector('input[name="billing-period"]:checked');
+    return selected ? selected.value : 'month';
+  }
+
+  function updateSeatControls() {
+    if (!dom.seatDefault || !dom.seatProlite || !dom.seatTotal) return;
+    var seatDefault = readSeatCount(dom.seatDefault);
+    var seatProlite = readSeatCount(dom.seatProlite);
+    var safeDefault = Number.isInteger(seatDefault) && seatDefault >= 0 ? seatDefault : 0;
+    var safeProlite = Number.isInteger(seatProlite) && seatProlite >= 0 ? seatProlite : 0;
+    var total = safeDefault + safeProlite;
+    dom.seatTotal.textContent = '合计 ' + total + ' 席';
+    dom.seatTotal.dataset.state = total >= MIN_SEATS && total <= MAX_SEATS ? 'valid' : 'invalid';
+    Array.prototype.forEach.call(dom.seatStepButtons || [], function (button) {
+      var input = $(button.dataset.seatTarget);
+      var value = readSeatCount(input);
+      var nextValue = value + Number(button.dataset.step);
+      button.disabled = !cdkVerified || !Number.isInteger(value) || nextValue < 0 || nextValue > MAX_SEATS;
+    });
+  }
+
+  function changeSeatCount(button) {
+    var input = $(button.dataset.seatTarget);
+    var current = readSeatCount(input);
+    if (!Number.isInteger(current)) current = 0;
+    var next = Math.max(0, Math.min(MAX_SEATS, current + Number(button.dataset.step)));
+    input.value = String(next);
+    updateSeatControls();
+    clearResult();
+  }
+
   function buildPayload() {
     var parsed = parseAccessToken(dom.tokenInput.value);
     var promoCode = String(dom.promoInput.value || '').trim();
-    var seatQuantity = parseInt(dom.seatQuantity.value || String(DEFAULT_SEAT), 10);
     var payload = {
       accessToken: parsed.token,
       country: selectedCountry.code,
       currency: selectedCountry.currency,
       workspaceName: String(dom.workspaceName.value || DEFAULT_WORKSPACE).slice(0, 80),
-      seatQuantity: seatQuantity,
+      seatDefault: readSeatCount(dom.seatDefault),
+      seatProlite: readSeatCount(dom.seatProlite),
+      billingPeriod: selectedBillingPeriod(),
       deviceId: DEVICE_ID
     };
     payload.cdk = cdkValue;
@@ -436,11 +528,20 @@
     var parsed = parseAccessToken(dom.tokenInput.value);
     if (!parsed.token) return '请先粘贴有效的 Access Token';
     if (parsed.token.length < MIN_TOKEN_LENGTH) return 'Access Token 过短（少于 ' + MIN_TOKEN_LENGTH + ' 字符）';
-    var seatQuantity = parseInt(dom.seatQuantity.value || '', 10);
-    var minSeats = Number(appConfig.minSeats) || DEFAULT_SEAT;
-    if (!Number.isInteger(seatQuantity) || seatQuantity < minSeats || seatQuantity > 999) {
-      return '席位数量必须是 ' + minSeats + '–999 之间的整数';
+    var seatDefault = readSeatCount(dom.seatDefault);
+    var seatProlite = readSeatCount(dom.seatProlite);
+    if (
+      !Number.isInteger(seatDefault) || seatDefault < 0 || seatDefault > MAX_SEATS ||
+      !Number.isInteger(seatProlite) || seatProlite < 0 || seatProlite > MAX_SEATS
+    ) {
+      return '标准席位和高级席位都必须是 0–' + MAX_SEATS + ' 之间的整数';
     }
+    var totalSeats = seatDefault + seatProlite;
+    var minSeats = Number(appConfig.minSeats) || MIN_SEATS;
+    if (totalSeats < minSeats || totalSeats > MAX_SEATS) {
+      return '标准席位与高级席位合计必须是 ' + minSeats + '–' + MAX_SEATS + ' 席';
+    }
+    if (!BILLING_LABELS[selectedBillingPeriod()]) return '请选择按月付或按年付';
     return '';
   }
 
@@ -459,7 +560,9 @@
       country: payload.country,
       currency: payload.currency,
       workspaceName: payload.workspaceName,
-      seatQuantity: payload.seatQuantity,
+      seatDefault: payload.seatDefault,
+      seatProlite: payload.seatProlite,
+      billingPeriod: payload.billingPeriod,
       promoCode: payload.promoCode || '',
       deviceId: maskToken(payload.deviceId),
       accessTokenPreview: maskToken(payload.accessToken)
@@ -528,7 +631,9 @@
   }
 
   function renderSuccess(data) {
-    var summary = '空间 ' + (data.workspaceName || '') + ' · ' + data.seatQuantity + ' 席 · ' + data.country + '/' + data.currency;
+    var seatSummary = '标准 ' + data.seatDefault + ' + 高级 ' + data.seatProlite + '（共 ' + data.seatQuantity + ' 席）';
+    var billingLabel = BILLING_LABELS[data.billingPeriod] || data.billingPeriod || '按月付';
+    var summary = '空间 ' + (data.workspaceName || '') + ' · ' + seatSummary + ' · ' + billingLabel + ' · ' + data.country + '/' + data.currency;
     if (data.promoCode) summary += ' · 优惠码 ' + data.promoCode;
 
     var details = [
@@ -584,6 +689,8 @@
     if (data.error === 'unsupported_country') return '所选国家不在后台允许列表中';
     if (data.error === 'rate_limited') return '请求过于频繁，请在 ' + data.retryAfterSec + ' 秒后重试';
     if (data.error === 'invalid_seat_quantity') return '席位数量必须是 ' + data.min + '–' + data.max + ' 之间的整数';
+    if (data.error === 'invalid_seat_type') return '请选择标准席位或高级席位';
+    if (data.error === 'invalid_billing_period') return '请选择按月付或按年付';
     if (data.message) return data.message;
     if (data.error) return '错误码：' + data.error;
     return 'HTTP ' + status;
@@ -631,14 +738,18 @@
     setCdkStatus('locked', '等待验证，下面的工具暂未解锁');
     setCdkVerifyBusy(false);
     dom.workspaceName.value = DEFAULT_WORKSPACE;
-    dom.seatQuantity.value = String((appConfig && appConfig.minSeats) || DEFAULT_SEAT);
+    dom.seatDefault.value = '2';
+    dom.seatProlite.value = '0';
+    dom.countrySearch.value = '';
     var defaultCode = appConfig && appConfig.defaultCountry;
-    var radio = document.querySelector('input[name="country"][value="' + defaultCode + '"]');
-    if (radio) {
-      radio.checked = true;
+    if (appConfig) {
       selectedCountry = appConfig.countries.find(function (country) { return country.code === defaultCode; }) || selectedCountry;
+      renderCountryTrigger();
+      renderCountryOptions('');
     }
+    closeCountryMenu();
     updateCountrySelection();
+    updateSeatControls();
     updateTokenMeta('');
     clearResult();
   }
@@ -660,6 +771,38 @@
     });
     dom.cdkVerifyBtn.addEventListener('click', verifyCdkAccess);
     dom.tokenInput.addEventListener('input', function () { updateTokenMeta(dom.tokenInput.value); });
+    dom.countryTrigger.addEventListener('click', function () {
+      if (dom.countryMenu.hidden) openCountryMenu();
+      else closeCountryMenu();
+    });
+    dom.countrySearch.addEventListener('input', function () { renderCountryOptions(dom.countrySearch.value); });
+    dom.countryMenu.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') {
+        closeCountryMenu();
+        dom.countryTrigger.focus();
+      }
+    });
+    document.addEventListener('click', function (event) {
+      if (!dom.countryPicker.contains(event.target)) closeCountryMenu();
+    });
+    Array.prototype.forEach.call(dom.seatStepButtons, function (button) {
+      button.addEventListener('click', function () { changeSeatCount(button); });
+    });
+    [dom.seatDefault, dom.seatProlite].forEach(function (input) {
+      input.addEventListener('input', function () {
+        updateSeatControls();
+        clearResult();
+      });
+      input.addEventListener('change', function () {
+        var value = readSeatCount(input);
+        if (!Number.isFinite(value)) value = 0;
+        input.value = String(Math.max(0, Math.min(MAX_SEATS, Math.trunc(value))));
+        updateSeatControls();
+      });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="billing-period"]'), function (input) {
+      input.addEventListener('change', clearResult);
+    });
     dom.checkoutForm.addEventListener('submit', onGenerate);
     dom.clearBtn.addEventListener('click', onClear);
   }
@@ -673,13 +816,20 @@
       cdkVerifyLabel: document.querySelector('.cdk-verify-label'),
       cdkStatus: $('cdk-status'),
       cdkStatusText: document.querySelector('.cdk-status-text'),
-      countryCards: $('country-cards'),
+      countryPicker: $('country-picker'),
+      countryTrigger: $('country-trigger'),
+      countryMenu: $('country-menu'),
+      countrySearch: $('country-search'),
+      countryOptions: $('country-options'),
       countrySelection: $('country-selection'),
       proxyOverview: $('proxy-overview'),
       tokenInput: $('token-input'),
       tokenMeta: $('token-meta'),
       workspaceName: $('workspace-name'),
-      seatQuantity: $('seat-quantity'),
+      seatDefault: $('seat-default'),
+      seatProlite: $('seat-prolite'),
+      seatTotal: $('seat-total'),
+      seatStepButtons: document.querySelectorAll('.seat-step'),
       promoInput: $('promo-input'),
       autoOpen: $('auto-open'),
       generateBtn: $('generate-btn'),

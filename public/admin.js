@@ -8,6 +8,7 @@
     { code: 'US', name: '美国', flag: '🇺🇸' },
     { code: 'EG', name: '埃及', flag: '🇪🇬' },
     { code: 'GB', name: '英国', flag: '🇬🇧' },
+    { code: 'CL', name: '智利', flag: '🇨🇱' },
     { code: 'PH', name: '菲律宾', flag: '🇵🇭' },
     { code: 'JP', name: '日本', flag: '🇯🇵' },
     { code: 'TH', name: '泰国', flag: '🇹🇭' },

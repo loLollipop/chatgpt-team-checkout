@@ -65,25 +65,41 @@
       <section class="country-section" aria-labelledby="country-title">
         <div class="section-head">
           <div>
-            <p class="step">02 / 选择结算地区</p>
-            <h2 id="country-title">快速地区</h2>
+            <p class="step">02 / 选择结算国家</p>
+            <h2 id="country-title">结算国家与货币</h2>
           </div>
           <div id="proxy-overview" class="proxy-overview" aria-live="polite">正在读取代理配置…</div>
         </div>
 
-        <div
-          id="country-cards"
-          class="country-grid is-loading"
-          role="radiogroup"
-          aria-label="国家或地区"
-          aria-busy="true"
-        >
-          <div class="country-skeleton"></div>
-          <div class="country-skeleton"></div>
-          <div class="country-skeleton"></div>
-          <div class="country-skeleton"></div>
-          <div class="country-skeleton"></div>
-          <div class="country-skeleton"></div>
+        <div id="country-picker" class="country-picker is-loading">
+          <button
+            id="country-trigger"
+            class="country-trigger"
+            type="button"
+            aria-haspopup="listbox"
+            aria-expanded="false"
+            aria-controls="country-menu"
+            disabled
+          >
+            <span class="country-trigger-skeleton">正在读取国家与价格…</span>
+          </button>
+          <div id="country-menu" class="country-menu" hidden>
+            <label class="country-search-wrap" for="country-search">
+              <span class="country-search-icon" aria-hidden="true"></span>
+              <input
+                id="country-search"
+                class="country-search"
+                type="search"
+                autocomplete="off"
+                placeholder="搜索国家、拼音、ISO 代码或货币…"
+              />
+            </label>
+            <div class="country-list-head">
+              <span>国家与价格列表</span>
+              <span>美元估算从低到高</span>
+            </div>
+            <div id="country-options" class="country-options" role="listbox" aria-label="国家或地区"></div>
+          </div>
         </div>
         <p id="country-selection" class="selection-line" aria-live="polite"></p>
       </section>
@@ -119,20 +135,55 @@
         </div>
 
         <div class="form-grid">
-          <div class="field">
+          <div class="seat-config-grid form-span-2">
+            <div class="seat-count-field">
+              <label class="label" for="seat-default">
+                <span>标准席位</span>
+                <span class="hint mono-label">DEFAULT</span>
+              </label>
+              <div class="seat-stepper">
+                <button class="seat-step" type="button" data-seat-target="seat-default" data-step="-1" aria-label="减少标准席位">−</button>
+                <input id="seat-default" class="seat-count" type="number" min="0" max="999" step="1" value="2" inputmode="numeric" />
+                <button class="seat-step" type="button" data-seat-target="seat-default" data-step="1" aria-label="增加标准席位">+</button>
+              </div>
+            </div>
+
+            <div class="seat-count-field">
+              <label class="label" for="seat-prolite">
+                <span>高级席位</span>
+                <span class="hint mono-label">PROLITE</span>
+              </label>
+              <div class="seat-stepper">
+                <button class="seat-step" type="button" data-seat-target="seat-prolite" data-step="-1" aria-label="减少高级席位">−</button>
+                <input id="seat-prolite" class="seat-count" type="number" min="0" max="999" step="1" value="0" inputmode="numeric" />
+                <button class="seat-step" type="button" data-seat-target="seat-prolite" data-step="1" aria-label="增加高级席位">+</button>
+              </div>
+            </div>
+
+            <fieldset class="billing-field">
+              <legend class="label">
+                <span>计费周期</span>
+                <span id="seat-total" class="hint">合计 2 席</span>
+              </legend>
+              <div class="billing-toggle">
+                <label>
+                  <input type="radio" name="billing-period" value="month" checked />
+                  <span>按月付</span>
+                </label>
+                <label>
+                  <input type="radio" name="billing-period" value="year" />
+                  <span>按年付</span>
+                </label>
+              </div>
+            </fieldset>
+          </div>
+
+          <div class="field form-span-2">
             <label class="label" for="workspace-name">
               <span>新建空间名</span>
               <span class="hint">最多 80 字符</span>
             </label>
             <input id="workspace-name" class="control" type="text" value="myWorkspace" maxlength="80" />
-          </div>
-
-          <div class="field">
-            <label class="label" for="seat-quantity">
-              <span>席位</span>
-              <span class="hint">最少 2 席</span>
-            </label>
-            <input id="seat-quantity" class="control mono" type="number" min="2" max="999" step="1" value="2" />
           </div>
 
           <div class="field form-span-2">

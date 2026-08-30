@@ -189,11 +189,18 @@ test('config endpoint exposes readiness but never relay credentials', async () =
   const data = JSON.parse(text);
 
   assert.equal(response.status, 200);
-  assert.equal(data.countries.length, 8);
+  assert.equal(data.countries.length, 9);
+  assert.deepEqual(data.seatTypes, [
+    { code: 'default', name: '标准席位' },
+    { code: 'prolite', name: '高级席位' },
+  ]);
+  assert.deepEqual(data.billingPeriods, ['month', 'year']);
   assert.equal(data.cdkRequired, true);
   assert.equal(data.cdkServiceReady, true);
   assert.equal(data.countries.find((country) => country.code === 'US').proxyConfigured, true);
   assert.equal(data.countries.find((country) => country.code === 'JP').proxyConfigured, false);
+  assert.equal(data.countries.find((country) => country.code === 'CL').currency, 'CLP');
+  assert.equal(data.countries.find((country) => country.code === 'CL').usdPrice, '23.35');
   assert.equal(text.includes(relayUrl), false);
   assert.equal(text.includes(relayToken), false);
   assert.equal(text.includes(env.CDK_HASH_PEPPER), false);
@@ -239,14 +246,14 @@ test('admin batch import saves multiple country routes atomically', async () => 
     body: JSON.stringify({
       routes: {
         US: 'http://user:pass@us.proxy.example:8080',
-        JP: 'https://user:pass@jp.proxy.example:8443',
+        CL: 'https://user:pass@cl.proxy.example:8443',
       },
     }),
   });
   const data = await response.json();
 
   assert.equal(response.status, 201);
-  assert.deepEqual(data.savedCountries, ['US', 'JP']);
+  assert.deepEqual(data.savedCountries, ['US', 'CL']);
   assert.equal(env.DB.proxyRows.length, 2);
   assert.equal(env.DB.proxyRows.every((row) => row.encrypted_url.startsWith('v1.')), true);
 });
@@ -319,7 +326,9 @@ test('checkout consumes CDK once, uses selected relay and enforces server curren
         country: 'US',
         currency: 'EUR',
         workspaceName: 'testWorkspace',
-        seatQuantity: 2,
+        seatDefault: 1,
+        seatProlite: 1,
+        billingPeriod: 'year',
         deviceId: 'test-device',
       }),
     });
@@ -341,6 +350,15 @@ test('checkout consumes CDK once, uses selected relay and enforces server curren
     assert.equal(envelope.headers.Authorization.startsWith('Bearer eyJ'), true);
     assert.equal('proxyUrl' in envelope, false);
     assert.deepEqual(checkoutPayload.billing_details, { country: 'US', currency: 'USD' });
+    assert.deepEqual(checkoutPayload.team_plan_data.seat_quantity, [
+      { seat_type: 'default', quantity: 1 },
+      { seat_type: 'prolite', quantity: 1 },
+    ]);
+    assert.equal(checkoutPayload.team_plan_data.price_interval, 'year');
+    assert.equal(data.seatDefault, 1);
+    assert.equal(data.seatProlite, 1);
+    assert.equal(data.seatQuantity, 2);
+    assert.equal(data.billingPeriod, 'year');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -374,10 +392,15 @@ test('checkout prefers an admin-imported proxy and sends it only inside the Rela
     }), env);
     const data = await response.json();
     const envelope = JSON.parse(capturedInit.body);
+    const checkoutPayload = JSON.parse(envelope.body);
 
     assert.equal(response.status, 200);
     assert.equal(data.ok, true);
     assert.equal(envelope.proxyUrl, dynamicProxyUrl + '/');
+    assert.deepEqual(checkoutPayload.team_plan_data.seat_quantity, [
+      { seat_type: 'default', quantity: 2 },
+      { seat_type: 'prolite', quantity: 0 },
+    ]);
     assert.equal(JSON.stringify(data).includes('dynamic-pass'), false);
   } finally {
     globalThis.fetch = originalFetch;
@@ -480,4 +503,71 @@ test('checkout rejects countries outside the visual allowlist', async () => {
 
   assert.equal(response.status, 400);
   assert.equal(data.error, 'unsupported_country');
+});
+
+test('checkout rejects unsupported seat types without consuming a CDK', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      cdk: issued.code,
+      accessToken: 'eyJ' + 'a'.repeat(80),
+      country: 'US',
+      seatQuantity: 2,
+      seatType: 'enterprise',
+    }),
+  }), env);
+  const data = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(data.error, 'invalid_seat_type');
+  assert.deepEqual(data.supportedSeatTypes, ['default', 'prolite']);
+  assert.equal(env.DB.rows[0].use_count, 0);
+});
+
+test('checkout requires standard and advanced seats to total at least two', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      cdk: issued.code,
+      accessToken: 'eyJ' + 'a'.repeat(80),
+      country: 'US',
+      seatDefault: 1,
+      seatProlite: 0,
+      billingPeriod: 'month',
+    }),
+  }), env);
+  const data = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(data.error, 'invalid_seat_quantity');
+  assert.equal(env.DB.rows[0].use_count, 0);
+});
+
+test('checkout rejects unsupported billing periods without consuming a CDK', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      cdk: issued.code,
+      accessToken: 'eyJ' + 'a'.repeat(80),
+      country: 'US',
+      seatDefault: 2,
+      seatProlite: 0,
+      billingPeriod: 'quarter',
+    }),
+  }), env);
+  const data = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(data.error, 'invalid_billing_period');
+  assert.deepEqual(data.supportedBillingPeriods, ['month', 'year']);
+  assert.equal(env.DB.rows[0].use_count, 0);
 });

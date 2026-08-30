@@ -17,16 +17,26 @@ const MIN_SEATS = 2;
 const MAX_SEATS = 999;
 const REQUEST_TIMEOUT_MS = 25_000;
 
+const SEAT_TYPES = [
+  { code: 'default', name: '标准席位' },
+  { code: 'prolite', name: '高级席位' },
+];
+const DEFAULT_SEAT_TYPE = 'default';
+const SEAT_TYPE_BY_CODE = Object.fromEntries(SEAT_TYPES.map((seatType) => [seatType.code, seatType]));
+const BILLING_PERIODS = ['month', 'year'];
+const DEFAULT_BILLING_PERIOD = 'month';
+
 // 这里是前后端共用的唯一国家清单。代理地址不放在代码中，而由 Worker secret 配置。
 const COUNTRIES = [
-  { code: 'US', name: '美国', currency: 'USD', price: '25', flag: '🇺🇸' },
-  { code: 'EG', name: '埃及', currency: 'EGP', price: '1,150', flag: '🇪🇬' },
-  { code: 'GB', name: '英国', currency: 'GBP', price: '18', flag: '🇬🇧' },
-  { code: 'PH', name: '菲律宾', currency: 'PHP', price: '1,450', flag: '🇵🇭' },
-  { code: 'JP', name: '日本', currency: 'JPY', price: '3,850', flag: '🇯🇵' },
-  { code: 'TH', name: '泰国', currency: 'THB', price: '780', flag: '🇹🇭' },
-  { code: 'IN', name: '印度', currency: 'INR', price: '2,250', flag: '🇮🇳' },
-  { code: 'SE', name: '瑞典', currency: 'SEK', price: '220', flag: '🇸🇪' },
+  { code: 'US', name: '美国', currency: 'USD', localPrice: '$25', usdPrice: '25.00', flag: '🇺🇸', pinyin: 'meiguo' },
+  { code: 'EG', name: '埃及', currency: 'EGP', localPrice: 'E£1,150', usdPrice: '22.88', flag: '🇪🇬', pinyin: 'aiji' },
+  { code: 'GB', name: '英国', currency: 'GBP', localPrice: '£18', usdPrice: '23.91', flag: '🇬🇧', pinyin: 'yingguo' },
+  { code: 'CL', name: '智利', currency: 'CLP', localPrice: '$21,600', usdPrice: '23.35', flag: '🇨🇱', pinyin: 'zhili' },
+  { code: 'PH', name: '菲律宾', currency: 'PHP', localPrice: '₱1,450', usdPrice: '23.29', flag: '🇵🇭', pinyin: 'feilvbin' },
+  { code: 'JP', name: '日本', currency: 'JPY', localPrice: '¥3,850', usdPrice: '26.18', flag: '🇯🇵', pinyin: 'riben' },
+  { code: 'TH', name: '泰国', currency: 'THB', localPrice: '฿780', usdPrice: '24.18', flag: '🇹🇭', pinyin: 'taiguo' },
+  { code: 'IN', name: '印度', currency: 'INR', localPrice: '₹2,250', usdPrice: '25.71', flag: '🇮🇳', pinyin: 'yindu' },
+  { code: 'SE', name: '瑞典', currency: 'SEK', localPrice: 'kr220', usdPrice: '23.10', flag: '🇸🇪', pinyin: 'ruidian' },
 ];
 const COUNTRY_BY_CODE = Object.fromEntries(COUNTRIES.map((country) => [country.code, country]));
 
@@ -162,14 +172,25 @@ function extractAccessToken(raw) {
   return trimmed.replace(/\s+/g, '');
 }
 
-function buildTeamPayload({ promoCode, country, currency, workspaceName, seatQuantity }) {
+function buildTeamPayload({
+  promoCode,
+  country,
+  currency,
+  workspaceName,
+  seatDefault,
+  seatProlite,
+  billingPeriod,
+}) {
   const trimmedPromo = String(promoCode || '').trim();
   const payload = {
     plan_name: 'chatgptteamplan',
     team_plan_data: {
       workspace_name: workspaceName,
-      price_interval: 'month',
-      seat_quantity: seatQuantity,
+      price_interval: billingPeriod,
+      seat_quantity: [
+        { seat_type: 'default', quantity: seatDefault },
+        { seat_type: 'prolite', quantity: seatProlite },
+      ],
     },
     billing_details: { country, currency },
     cancel_url: trimmedPromo
@@ -315,6 +336,10 @@ async function configurationResponse(env) {
       ok: true,
       defaultCountry: firstConfigured?.code || DEFAULT_COUNTRY,
       minSeats: MIN_SEATS,
+      defaultSeatType: DEFAULT_SEAT_TYPE,
+      seatTypes: SEAT_TYPES,
+      defaultBillingPeriod: DEFAULT_BILLING_PERIOD,
+      billingPeriods: BILLING_PERIODS,
       proxyRequired: !directAllowed,
       configValid: !legacyProxyConfig.parseError && !commonRelay.parseError && !dynamic.error,
       cdkRequired: true,
@@ -713,10 +738,52 @@ async function handleTeamCheckout(request, env) {
     );
   }
 
-  const seatQuantity = Number(body.seatQuantity);
+  const usesTypedSeatCounts = body.seatDefault != null || body.seatProlite != null;
+  let seatDefault;
+  let seatProlite;
+  if (usesTypedSeatCounts) {
+    seatDefault = Number(body.seatDefault ?? 0);
+    seatProlite = Number(body.seatProlite ?? 0);
+  } else {
+    const legacySeatTypeCode = String(body.seatType || DEFAULT_SEAT_TYPE).toLowerCase();
+    const legacySeatType = SEAT_TYPE_BY_CODE[legacySeatTypeCode];
+    if (!legacySeatType) {
+      return jsonResponse(
+        { ok: false, error: 'invalid_seat_type', supportedSeatTypes: SEAT_TYPES.map((item) => item.code) },
+        400,
+        {},
+        env
+      );
+    }
+    const legacyQuantity = Number(body.seatQuantity);
+    seatDefault = legacySeatType.code === 'default' ? legacyQuantity : 0;
+    seatProlite = legacySeatType.code === 'prolite' ? legacyQuantity : 0;
+  }
+  const seatQuantity = seatDefault + seatProlite;
   if (!Number.isInteger(seatQuantity) || seatQuantity < MIN_SEATS || seatQuantity > MAX_SEATS) {
     return jsonResponse(
       { ok: false, error: 'invalid_seat_quantity', min: MIN_SEATS, max: MAX_SEATS },
+      400,
+      {},
+      env
+    );
+  }
+  if (
+    !Number.isInteger(seatDefault) || seatDefault < 0 || seatDefault > MAX_SEATS ||
+    !Number.isInteger(seatProlite) || seatProlite < 0 || seatProlite > MAX_SEATS
+  ) {
+    return jsonResponse(
+      { ok: false, error: 'invalid_seat_quantity', min: MIN_SEATS, max: MAX_SEATS },
+      400,
+      {},
+      env
+    );
+  }
+
+  const billingPeriod = String(body.billingPeriod || DEFAULT_BILLING_PERIOD).toLowerCase();
+  if (!BILLING_PERIODS.includes(billingPeriod)) {
+    return jsonResponse(
+      { ok: false, error: 'invalid_billing_period', supportedBillingPeriods: BILLING_PERIODS },
       400,
       {},
       env
@@ -739,7 +806,9 @@ async function handleTeamCheckout(request, env) {
     country: country.code,
     currency: country.currency,
     workspaceName,
-    seatQuantity,
+    seatDefault,
+    seatProlite,
+    billingPeriod,
   });
   const headers = buildCheckoutHeaders({
     accessToken,
@@ -766,6 +835,9 @@ async function handleTeamCheckout(request, env) {
             currency: country.currency,
             workspaceName,
             seatQuantity,
+            seatDefault,
+            seatProlite,
+            billingPeriod,
             promoCode: payload.promo_code || '',
             proxyUsed: Boolean(proxyRoute),
             cdkRemainingUses: cdkAuthorization.remainingUses,

@@ -178,12 +178,16 @@ CDK 可处于以下状态：
   "promoCode": "SPRING50",
   "country": "US",
   "workspaceName": "myWorkspace",
-  "seatQuantity": 2,
+  "seatDefault": 2,
+  "seatProlite": 0,
+  "billingPeriod": "month",
   "deviceId": "d8f2-..."
 }
 ```
 
-后端只接受八个国家，币种由国家强制决定。主源网络错误、超时或 5xx 时，会通过同一个国家代理回退到 `api.openai.com`。
+`seatDefault` 和 `seatProlite` 分别是标准席位与高级席位数量，两者都可大于 0，但合计必须为 2–999。`billingPeriod` 可选 `month` 或 `year`。后端会把两个席位数量转换为 Checkout 需要的两项 `seat_quantity` 数组；旧版 `seatQuantity` + `seatType` 请求仍兼容。
+
+后端只接受九个国家，币种由国家强制决定。主源网络错误、超时或 5xx 时，会通过同一个国家代理回退到 `api.openai.com`。
 
 ### 管理 API
 
