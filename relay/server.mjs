@@ -8,7 +8,7 @@ const RELAY_TOKEN = process.env.RELAY_TOKEN || '';
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_PROXY_AGENTS = 32;
 const IP_CHECK_URL = 'https://api.ipify.org?format=json';
-const ALLOWED_COUNTRIES = new Set(['US', 'EG', 'GB', 'PH', 'JP', 'TH', 'IN', 'SE']);
+const ALLOWED_COUNTRIES = new Set(['US', 'EG', 'GB', 'CL', 'PH', 'JP', 'TH', 'IN', 'SE']);
 const ALLOWED_TARGETS = new Set([
   'https://chatgpt.com/backend-api/payments/checkout',
   'https://api.openai.com/backend-api/payments/checkout',

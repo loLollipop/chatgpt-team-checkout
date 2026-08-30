@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import worker from '../src/worker.js';
@@ -322,6 +323,17 @@ test('config endpoint exposes readiness but never relay credentials', async () =
   assert.equal(text.includes(relayUrl), false);
   assert.equal(text.includes(relayToken), false);
   assert.equal(text.includes(env.CDK_HASH_PEPPER), false);
+});
+
+test('Relay country allowlist stays aligned with checkout countries', async () => {
+  const env = createEnv();
+  const response = await worker.fetch(new Request('https://checkout.example/api/config'), env);
+  const data = await response.json();
+  const relaySource = await readFile(new URL('../relay/server.mjs', import.meta.url), 'utf8');
+  const allowlistSource = /const ALLOWED_COUNTRIES = new Set\(\[([^\]]+)\]\)/.exec(relaySource)?.[1] || '';
+  const relayCountries = [...allowlistSource.matchAll(/'([A-Z]{2})'/g)].map((match) => match[1]);
+
+  assert.deepEqual(relayCountries, data.countries.map((country) => country.code));
 });
 
 test('exchange-rate endpoint returns only supported live USD rates', async () => {
