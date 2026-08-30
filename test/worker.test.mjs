@@ -16,6 +16,27 @@ class MemoryStatement {
   }
 
   async first() {
+    if (this.query.includes('SELECT COUNT(*) AS available') && this.query.includes('FROM promo_codes p')) {
+      const country = this.values[0];
+      const available = this.database.promoRows.filter((row) =>
+        row.country === country && !row.deleted_at &&
+        !this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id)
+      ).length;
+      return { available };
+    }
+    if (this.query.includes('SUM(CASE WHEN a.cdk_id IS NULL') && this.query.includes('FROM promo_codes p')) {
+      const countryFiltered = this.query.includes('WHERE p.country = ?1');
+      const country = countryFiltered ? this.values[0] : '';
+      const rows = this.database.promoRows.filter((row) => !row.deleted_at && (!country || row.country === country));
+      const assigned = rows.filter((row) => this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id)).length;
+      return { total: rows.length, available: rows.length - assigned, assigned };
+    }
+    if (this.query.includes('JOIN cdk_promo_assignments a ON a.cdk_id = c.id') && this.query.includes('WHERE c.code_hash = ?1')) {
+      const cdk = this.database.rows.find((row) => row.code_hash === this.values[0]);
+      const assignment = cdk && this.database.assignmentRows.find((row) => row.cdk_id === cdk.id);
+      const promo = assignment && this.database.promoRows.find((row) => row.id === assignment.promo_code_id);
+      return cdk && promo ? { cdk_id: cdk.id, encrypted_code: promo.encrypted_code, code_suffix: promo.code_suffix, country: promo.country } : null;
+    }
     if (this.query.includes('FROM proxy_routes WHERE country = ?1')) {
       return this.database.proxyRows.find((row) => row.country === this.values[0]) || null;
     }
@@ -29,15 +50,63 @@ class MemoryStatement {
   }
 
   async all() {
+    if (this.query.includes('FROM promo_codes p') && this.query.includes('ORDER BY p.id DESC')) {
+      const countryFiltered = this.query.includes('WHERE p.country = ?1');
+      const country = countryFiltered ? this.values[0] : '';
+      const limit = Number(this.values[countryFiltered ? 1 : 0]) || 500;
+      const rows = this.database.promoRows
+        .filter((row) => !row.deleted_at && (!country || row.country === country))
+        .sort((left, right) => right.id - left.id)
+        .slice(0, limit)
+        .map((row) => {
+          const assignment = this.database.assignmentRows.find((item) => item.promo_code_id === row.id);
+          const cdk = assignment && this.database.rows.find((item) => item.id === assignment.cdk_id);
+          return { ...row, cdk_id: assignment?.cdk_id ?? null, assigned_at: assignment?.assigned_at ?? null, cdk_suffix: cdk?.code_suffix ?? null };
+        });
+      return { results: rows };
+    }
     if (this.query.includes('FROM proxy_routes ORDER BY country ASC')) {
       return { results: [...this.database.proxyRows].sort((left, right) => left.country.localeCompare(right.country)) };
     }
-    if (!this.query.includes('FROM cdks ORDER BY id DESC')) return { results: [] };
+    if (!this.query.includes('FROM cdks c') || !this.query.includes('ORDER BY c.id DESC')) return { results: [] };
     const limit = Number(this.values[0]) || 200;
-    return { results: [...this.database.rows].sort((left, right) => right.id - left.id).slice(0, limit) };
+    return {
+      results: [...this.database.rows].sort((left, right) => right.id - left.id).slice(0, limit).map((row) => {
+        const assignment = this.database.assignmentRows.find((item) => item.cdk_id === row.id);
+        const promo = assignment && this.database.promoRows.find((item) => item.id === assignment.promo_code_id);
+        return { ...row, promo_country: promo?.country ?? null, promo_suffix: promo?.code_suffix ?? null };
+      }),
+    };
   }
 
   async run() {
+    if (this.query.startsWith('INSERT OR IGNORE INTO promo_codes')) {
+      const [codeHash, encryptedCode, codeSuffix, country, batchName, importedAt] = this.values;
+      if (this.database.promoRows.some((row) => row.code_hash === codeHash)) return { meta: { changes: 0 } };
+      const id = this.database.nextPromoId++;
+      this.database.promoRows.push({ id, code_hash: codeHash, encrypted_code: encryptedCode, code_suffix: codeSuffix, country, batch_name: batchName, imported_at: importedAt, deleted_at: null });
+      return { meta: { changes: 1, last_row_id: id } };
+    }
+
+    if (this.query.startsWith('INSERT INTO cdk_promo_assignments')) {
+      const [codeHash, country, assignedAt] = this.values;
+      const cdk = this.database.rows.find((row) => row.code_hash === codeHash);
+      const promo = this.database.promoRows
+        .filter((row) => row.country === country && !row.deleted_at && !this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id))
+        .sort((left, right) => left.id - right.id)[0];
+      if (!cdk || !promo || this.database.assignmentRows.some((row) => row.cdk_id === cdk.id)) return { meta: { changes: 0 } };
+      this.database.assignmentRows.push({ cdk_id: cdk.id, promo_code_id: promo.id, assigned_at: assignedAt });
+      return { meta: { changes: 1 } };
+    }
+
+    if (this.query.startsWith('UPDATE promo_codes SET deleted_at')) {
+      const [deletedAt, id] = this.values;
+      const promo = this.database.promoRows.find((row) => row.id === Number(id) && !row.deleted_at);
+      if (!promo || this.database.assignmentRows.some((row) => row.promo_code_id === promo.id)) return { meta: { changes: 0 } };
+      promo.deleted_at = deletedAt;
+      return { meta: { changes: 1 } };
+    }
+
     if (this.query.startsWith('INSERT INTO proxy_routes')) {
       const [country, encryptedUrl, displayUrl, protocol, host, port, maskedUsername, updatedAt] = this.values;
       const existing = this.database.proxyRows.find((row) => row.country === country);
@@ -124,7 +193,10 @@ class MemoryD1 {
   constructor() {
     this.rows = [];
     this.proxyRows = [];
+    this.promoRows = [];
+    this.assignmentRows = [];
     this.nextId = 1;
+    this.nextPromoId = 1;
   }
 
   prepare(query) {
@@ -148,6 +220,7 @@ function createEnv(proxyCountries = ['US']) {
     COUNTRY_PROXY_CONFIG: JSON.stringify(proxyConfig),
     RELAY_CONFIG: JSON.stringify({ url: relayUrl, token: relayToken }),
     PROXY_ENCRYPTION_KEY: 'test-proxy-encryption-secret-value',
+    PROMO_ENCRYPTION_KEY: 'test-promo-encryption-secret-value',
     CDK_HASH_PEPPER: 'test-cdk-pepper-value',
     ADMIN_TOKEN: 'test-admin-token-value',
     DB: new MemoryD1(),
@@ -165,10 +238,24 @@ async function adminRequest(env, path, options = {}) {
 }
 
 async function issueCdk(env, overrides = {}) {
+  const count = Number(overrides.count || 1);
+  const promoCountry = String(overrides.promoCountry || 'GB');
+  const promoResponse = await adminRequest(env, '/api/admin/promos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      country: promoCountry,
+      batchName: 'test inventory',
+      codes: Array.from({ length: count }, (_, index) =>
+        `https://chatgpt.com/p/TEST${String(env.DB.nextPromoId + index).padStart(12, '0')}`
+      ),
+    }),
+  });
+  assert.equal(promoResponse.status, 201);
   const response = await adminRequest(env, '/api/admin/cdks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ count: 1, maxUses: 3, expiresDays: 30, label: 'test', ...overrides }),
+    body: JSON.stringify({ count: 1, maxUses: 3, expiresDays: 30, label: 'test', promoCountry, ...overrides }),
   });
   assert.equal(response.status, 201);
   return (await response.json()).codes[0];
@@ -256,6 +343,80 @@ test('admin batch import saves multiple country routes atomically', async () => 
   assert.deepEqual(data.savedCountries, ['US', 'CL']);
   assert.equal(env.DB.proxyRows.length, 2);
   assert.equal(env.DB.proxyRows.every((row) => row.encrypted_url.startsWith('v1.')), true);
+});
+
+test('admin imports promo links encrypted and never lists plaintext', async () => {
+  const env = createEnv();
+  const promo = 'chatgpt.com/p/E3NW9QBJZXKNM9ZE';
+  const importResponse = await adminRequest(env, '/api/admin/promos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ country: 'GB', batchName: 'GB-promo code', codes: [promo, promo] }),
+  });
+  const imported = await importResponse.json();
+
+  assert.equal(importResponse.status, 201);
+  assert.equal(imported.importedCount, 1);
+  assert.equal(env.DB.promoRows.length, 1);
+  assert.match(env.DB.promoRows[0].encrypted_code, /^v1\./);
+  assert.equal(env.DB.promoRows[0].encrypted_code.includes('E3NW9QBJZXKNM9ZE'), false);
+
+  const listResponse = await adminRequest(env, '/api/admin/promos');
+  const listText = await listResponse.text();
+  const list = JSON.parse(listText);
+  assert.equal(list.stats.available, 1);
+  assert.equal(list.records[0].maskedCode.endsWith('KNM9ZE'), true);
+  assert.equal(listText.includes('E3NW9QBJZXKNM9ZE'), false);
+  assert.equal('encrypted_code' in list.records[0], false);
+});
+
+test('CDK generation atomically assigns distinct promo links and exposes plaintext once', async () => {
+  const env = createEnv();
+  const promos = [
+    'https://chatgpt.com/p/AAAAAAAAAAAAAAA1',
+    'https://chatgpt.com/p/AAAAAAAAAAAAAAA2',
+  ];
+  const importResponse = await adminRequest(env, '/api/admin/promos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ country: 'GB', batchName: 'assignment', codes: promos }),
+  });
+  assert.equal(importResponse.status, 201);
+
+  const issueResponse = await adminRequest(env, '/api/admin/cdks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ count: 2, maxUses: 3, expiresDays: 30, promoCountry: 'GB' }),
+  });
+  const issueText = await issueResponse.text();
+  const issued = JSON.parse(issueText);
+  assert.equal(issueResponse.status, 201);
+  assert.equal(new Set(issued.codes.map((record) => record.promoCode)).size, 2);
+  assert.deepEqual(new Set(issued.codes.map((record) => record.promoCode)), new Set(promos));
+  assert.equal(env.DB.assignmentRows.length, 2);
+
+  const listResponse = await adminRequest(env, '/api/admin/cdks?limit=20');
+  const listText = await listResponse.text();
+  const list = JSON.parse(listText);
+  assert.equal(list.records.every((record) => record.promoCountry === 'GB'), true);
+  assert.equal(listText.includes('AAAAAAAAAAAAAAA1'), false);
+  assert.equal(listText.includes('AAAAAAAAAAAAAAA2'), false);
+});
+
+test('CDK generation fails without partially creating records when promo inventory is insufficient', async () => {
+  const env = createEnv();
+  const response = await adminRequest(env, '/api/admin/cdks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ count: 2, maxUses: 3, expiresDays: 30, promoCountry: 'GB' }),
+  });
+  const data = await response.json();
+
+  assert.equal(response.status, 409);
+  assert.equal(data.error, 'promo_inventory_insufficient');
+  assert.equal(data.available, 0);
+  assert.equal(env.DB.rows.length, 0);
+  assert.equal(env.DB.assignmentRows.length, 0);
 });
 
 test('admin can issue, list and revoke a CDK without persisting plaintext', async () => {

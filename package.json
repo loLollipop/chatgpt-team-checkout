@@ -1,9 +1,9 @@
 {
   "name": "chatgpt-team-checkout",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "module",
   "private": true,
-  "description": "ChatGPT Team checkout link generator - Cloudflare Worker + static frontend",
+  "description": "ChatGPT Team long-link workspace with CDK, promo inventory and proxy routing",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

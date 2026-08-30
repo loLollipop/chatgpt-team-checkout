@@ -1,3 +1,5 @@
+import { assignedPromoForCdkHash, availablePromoCount } from './promo-codes.js';
+
 const CDK_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CDK_GROUPS = 4;
 const CDK_GROUP_LENGTH = 4;
@@ -68,6 +70,8 @@ function publicRecord(row, now = new Date()) {
     expiresAt: row.expires_at || '',
     revokedAt: row.revoked_at || '',
     lastUsedAt: row.last_used_at || '',
+    promoCountry: row.promo_country || '',
+    promoCode: row.promo_suffix ? 'chatgpt.com/p/••••••' + row.promo_suffix : '',
     state: recordState(row, now),
   };
 }
@@ -138,6 +142,20 @@ export async function createCdks(input, env) {
   if (maxUses == null) return { ok: false, error: 'invalid_cdk_max_uses', max: MAX_CDK_USES };
   if (expiresDays == null) return { ok: false, error: 'invalid_cdk_expiry_days', max: MAX_EXPIRY_DAYS };
 
+  const promoCountry = String(input?.promoCountry || 'GB').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(promoCountry)) return { ok: false, error: 'invalid_promo_country' };
+  const inventory = await availablePromoCount(promoCountry, env);
+  if (!inventory.ok) return inventory;
+  if (inventory.available < count) {
+    return {
+      ok: false,
+      error: 'promo_inventory_insufficient',
+      country: promoCountry,
+      available: inventory.available,
+      required: count,
+    };
+  }
+
   const label = String(input?.label || '').trim().slice(0, 80);
   const createdAt = new Date().toISOString();
   const expiresAt = expiresDays === 0
@@ -157,17 +175,39 @@ export async function createCdks(input, env) {
          VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)`
       ).bind(codeHash, code.slice(-4), label, maxUses, createdAt, expiresAt)
     );
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO cdk_promo_assignments (cdk_id, promo_code_id, assigned_at)
+         VALUES (
+           (SELECT id FROM cdks WHERE code_hash = ?1 LIMIT 1),
+           (
+             SELECT p.id FROM promo_codes p
+             WHERE p.country = ?2 AND p.deleted_at IS NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM cdk_promo_assignments a WHERE a.promo_code_id = p.id
+               )
+             ORDER BY p.id ASC LIMIT 1
+           ),
+           ?3
+         )`
+      ).bind(codeHash, promoCountry, createdAt)
+    );
   }
 
   const insertResults = await env.DB.batch(statements);
+  const assignments = await Promise.all(generated.map((item) => assignedPromoForCdkHash(item.codeHash, env)));
+  const failedAssignment = assignments.find((assignment) => !assignment.ok);
+  if (failedAssignment) return failedAssignment;
   return {
     ok: true,
     codes: generated.map((item, index) => ({
-      id: Number(insertResults[index]?.meta?.last_row_id || 0),
+      id: Number(insertResults[index * 2]?.meta?.last_row_id || assignments[index].cdkId || 0),
       code: item.code,
       label,
       maxUses,
       expiresAt: expiresAt || '',
+      promoCode: assignments[index].promoCode,
+      promoCountry: assignments[index].country,
     })),
   };
 }
@@ -176,8 +216,12 @@ export async function listCdks(env, limitValue = 200) {
   if (!databaseReady(env)) return unavailableResult();
   const limit = parsePositiveInteger(limitValue, 200, 500) || 200;
   const result = await env.DB.prepare(
-    `SELECT id, code_suffix, label, max_uses, use_count, created_at, expires_at, revoked_at, last_used_at
-     FROM cdks ORDER BY id DESC LIMIT ?1`
+    `SELECT c.id, c.code_suffix, c.label, c.max_uses, c.use_count, c.created_at, c.expires_at,
+            c.revoked_at, c.last_used_at, p.country AS promo_country, p.code_suffix AS promo_suffix
+     FROM cdks c
+     LEFT JOIN cdk_promo_assignments a ON a.cdk_id = c.id
+     LEFT JOIN promo_codes p ON p.id = a.promo_code_id
+     ORDER BY c.id DESC LIMIT ?1`
   ).bind(limit).all();
   const now = new Date();
   const records = (result?.results || []).map((row) => publicRecord(row, now));

@@ -1,0 +1,256 @@
+const MAX_PROMO_LENGTH = 240;
+const MAX_IMPORT_SIZE = 1_000;
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function base64ToBytes(value) {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+async function deriveEncryptionKey(secret) {
+  const material = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(secret)));
+  return crypto.subtle.importKey('raw', material, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+
+function serviceReady(env) {
+  return Boolean(env?.DB && env?.PROMO_ENCRYPTION_KEY);
+}
+
+function validCountry(value) {
+  const country = String(value || '').trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(country) ? country : '';
+}
+
+export function normalizePromoCode(value) {
+  let raw = String(value || '').trim();
+  if (!raw || raw.length > MAX_PROMO_LENGTH) return '';
+
+  if (/^(?:www\.)?chatgpt\.com\//i.test(raw)) raw = 'https://' + raw;
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const url = new URL(raw);
+      const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+      if (url.protocol !== 'https:' || hostname !== 'chatgpt.com') return '';
+      const match = /^\/p\/([A-Za-z0-9_-]{6,160})\/?$/.exec(url.pathname);
+      if (!match) return '';
+      return 'https://chatgpt.com/p/' + match[1].toUpperCase();
+    } catch {
+      return '';
+    }
+  }
+
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{5,159}$/.test(raw)) return '';
+  return raw.toUpperCase();
+}
+
+export async function hashPromoCode(value, secret) {
+  const normalized = normalizePromoCode(value);
+  if (!normalized || !secret) return '';
+  const bytes = new TextEncoder().encode(String(secret) + ':promo:' + normalized);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function encryptPromoCode(value, secret, country) {
+  const key = await deriveEncryptionKey(secret);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const additionalData = new TextEncoder().encode('promo:' + country);
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData },
+    key,
+    new TextEncoder().encode(value)
+  );
+  return 'v1.' + bytesToBase64(iv) + '.' + bytesToBase64(new Uint8Array(encrypted));
+}
+
+export async function decryptPromoCode(encryptedValue, secret, country) {
+  const [version, ivValue, ciphertextValue] = String(encryptedValue || '').split('.');
+  if (version !== 'v1' || !ivValue || !ciphertextValue) throw new Error('invalid encrypted promo code');
+  const key = await deriveEncryptionKey(secret);
+  const additionalData = new TextEncoder().encode('promo:' + country);
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToBytes(ivValue), additionalData },
+    key,
+    base64ToBytes(ciphertextValue)
+  );
+  return new TextDecoder().decode(decrypted);
+}
+
+function suffixFor(value) {
+  const normalized = normalizePromoCode(value);
+  const token = normalized.includes('/') ? normalized.split('/').pop() : normalized;
+  return token.slice(-6);
+}
+
+function maskedPromo(row) {
+  const prefix = String(row.encrypted_code || '').startsWith('v1.') ? 'chatgpt.com/p/' : '';
+  return prefix + '••••••' + row.code_suffix;
+}
+
+function entriesFromInput(input) {
+  if (Array.isArray(input?.codes)) return input.codes;
+  if (typeof input?.text === 'string') return input.text.split(/[\r\n,;\t]+/);
+  return [];
+}
+
+export async function importPromoCodes(input, env) {
+  if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
+  const country = validCountry(input?.country);
+  if (!country) return { ok: false, error: 'invalid_promo_country' };
+  const batchName = String(input?.batchName || '').trim().slice(0, 80) || country + ' 导入批次';
+  const sourceEntries = entriesFromInput(input);
+  if (!sourceEntries.length || sourceEntries.length > MAX_IMPORT_SIZE) {
+    return { ok: false, error: 'invalid_promo_import', max: MAX_IMPORT_SIZE };
+  }
+
+  const uniqueValues = [];
+  const seen = new Set();
+  let invalidCount = 0;
+  for (const entry of sourceEntries) {
+    const normalized = normalizePromoCode(entry);
+    if (!normalized) {
+      if (String(entry || '').trim()) invalidCount += 1;
+      continue;
+    }
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    uniqueValues.push(normalized);
+  }
+  if (!uniqueValues.length) return { ok: false, error: 'no_valid_promo_codes', invalidCount };
+
+  const importedAt = new Date().toISOString();
+  const prepared = await Promise.all(uniqueValues.map(async (value) => ({
+    value,
+    hash: await hashPromoCode(value, env.PROMO_ENCRYPTION_KEY),
+    encrypted: await encryptPromoCode(value, env.PROMO_ENCRYPTION_KEY, country),
+    suffix: suffixFor(value),
+  })));
+  const statements = prepared.map((item) => env.DB.prepare(
+    `INSERT OR IGNORE INTO promo_codes
+     (code_hash, encrypted_code, code_suffix, country, batch_name, imported_at, deleted_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)`
+  ).bind(item.hash, item.encrypted, item.suffix, country, batchName, importedAt));
+  const results = await env.DB.batch(statements);
+  const importedCount = results.reduce(
+    (count, result) => count + (Number(result?.meta?.changes || 0) === 1 ? 1 : 0),
+    0
+  );
+  return {
+    ok: true,
+    country,
+    batchName,
+    receivedCount: sourceEntries.length,
+    validCount: prepared.length,
+    importedCount,
+    duplicateCount: prepared.length - importedCount,
+    invalidCount,
+  };
+}
+
+function publicPromoRecord(row) {
+  const assigned = row.cdk_id != null;
+  return {
+    id: Number(row.id),
+    maskedCode: maskedPromo(row),
+    country: row.country,
+    batchName: row.batch_name || '',
+    importedAt: row.imported_at,
+    state: assigned ? 'assigned' : 'available',
+    assignedAt: row.assigned_at || '',
+    assignedCdkId: assigned ? Number(row.cdk_id) : null,
+    assignedCdk: assigned ? '••••-••••-••••-' + row.cdk_suffix : '',
+  };
+}
+
+export async function listPromoCodes(env, options = {}) {
+  if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
+  const limitValue = Number(options.limit || 500);
+  const limit = Number.isInteger(limitValue) && limitValue > 0 && limitValue <= 1_000 ? limitValue : 500;
+  const country = validCountry(options.country);
+  const filterSql = country ? 'WHERE p.country = ?1 AND p.deleted_at IS NULL' : 'WHERE p.deleted_at IS NULL';
+  const statement = env.DB.prepare(
+    `SELECT p.id, p.encrypted_code, p.code_suffix, p.country, p.batch_name, p.imported_at,
+            a.cdk_id, a.assigned_at, c.code_suffix AS cdk_suffix
+     FROM promo_codes p
+     LEFT JOIN cdk_promo_assignments a ON a.promo_code_id = p.id
+     LEFT JOIN cdks c ON c.id = a.cdk_id
+     ${filterSql}
+     ORDER BY p.id DESC LIMIT ?${country ? 2 : 1}`
+  );
+  const result = country ? await statement.bind(country, limit).all() : await statement.bind(limit).all();
+  const records = (result?.results || []).map(publicPromoRecord);
+  const statsStatement = env.DB.prepare(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN a.cdk_id IS NULL THEN 1 ELSE 0 END) AS available,
+            SUM(CASE WHEN a.cdk_id IS NOT NULL THEN 1 ELSE 0 END) AS assigned
+     FROM promo_codes p
+     LEFT JOIN cdk_promo_assignments a ON a.promo_code_id = p.id
+     ${filterSql}`
+  );
+  const statsRow = country ? await statsStatement.bind(country).first() : await statsStatement.first();
+  return {
+    ok: true,
+    records,
+    stats: {
+      total: Number(statsRow?.total || 0),
+      available: Number(statsRow?.available || 0),
+      assigned: Number(statsRow?.assigned || 0),
+    },
+  };
+}
+
+export async function availablePromoCount(countryValue, env) {
+  if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
+  const country = validCountry(countryValue);
+  if (!country) return { ok: false, error: 'invalid_promo_country' };
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS available
+     FROM promo_codes p
+     WHERE p.country = ?1 AND p.deleted_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM cdk_promo_assignments a WHERE a.promo_code_id = p.id
+       )`
+  ).bind(country).first();
+  return { ok: true, country, available: Number(row?.available || 0) };
+}
+
+export async function assignedPromoForCdkHash(codeHash, env) {
+  if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
+  const row = await env.DB.prepare(
+    `SELECT c.id AS cdk_id, p.encrypted_code, p.code_suffix, p.country
+     FROM cdks c
+     JOIN cdk_promo_assignments a ON a.cdk_id = c.id
+     JOIN promo_codes p ON p.id = a.promo_code_id
+     WHERE c.code_hash = ?1 LIMIT 1`
+  ).bind(codeHash).first();
+  if (!row) return { ok: false, error: 'promo_assignment_missing' };
+  try {
+    const promoCode = await decryptPromoCode(row.encrypted_code, env.PROMO_ENCRYPTION_KEY, row.country);
+    return { ok: true, cdkId: Number(row.cdk_id), promoCode, country: row.country };
+  } catch {
+    return { ok: false, error: 'promo_decryption_failed' };
+  }
+}
+
+export async function deletePromoCode(idValue, env) {
+  if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
+  const id = Number(idValue);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'invalid_promo_id' };
+  const deletedAt = new Date().toISOString();
+  const result = await env.DB.prepare(
+    `UPDATE promo_codes SET deleted_at = ?1
+     WHERE id = ?2 AND deleted_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM cdk_promo_assignments a WHERE a.promo_code_id = promo_codes.id
+       )`
+  ).bind(deletedAt, id).run();
+  if (Number(result?.meta?.changes || 0) !== 1) {
+    return { ok: false, error: 'promo_not_found_or_assigned' };
+  }
+  return { ok: true, id, deletedAt };
+}

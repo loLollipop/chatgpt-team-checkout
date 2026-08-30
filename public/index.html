@@ -1,233 +1,137 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="color-scheme" content="light" />
-  <meta name="theme-color" content="#f4f1e9" />
-  <title>ChatGPT Team 支付长链生成器</title>
-  <link rel="stylesheet" href="./style.css" />
-</head>
-<body>
-  <main class="shell">
-    <header class="head">
-      <div class="brand" aria-label="ChatGPT Team Checkout">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" role="img">
-            <path d="M6.8 9.7 16 4.4l9.2 5.3v10.6L16 25.6l-9.2-5.3V9.7Z" />
-            <path d="m11.1 12.1 4.9-2.8 4.9 2.8v5.7L16 20.6l-4.9-2.8v-5.7Z" />
-          </svg>
-        </span>
-        <div>
-          <p class="eyebrow">TEAM CHECKOUT ROUTER</p>
-          <h1>支付长链生成器</h1>
-        </div>
-      </div>
-      <p class="sub">选择地区后，结算请求会通过该国家在后台配置的专属出口转发。</p>
-    </header>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="ChatGPT Team 长链工作台" />
+    <title>ChatGPT Team 长链工作台</title>
+    <link rel="icon" href="/chatgpt-logo.svg" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
 
-    <form id="checkout-form" class="card" novalidate>
-      <section class="access-gate" aria-labelledby="cdk-title">
-        <div class="access-copy">
-          <p class="step">01 / 验证使用授权</p>
-          <h2 id="cdk-title">CDK 通行验证</h2>
-          <p>输入管理员发放的 CDK，通过校核后才能选择地区并生成支付链。</p>
+    <main id="gate-view" class="gate-view">
+      <section class="gate-card" aria-labelledby="gate-title">
+        <div class="brand-lockup brand-lockup-center">
+          <span class="brand-logo"><img src="/chatgpt-logo.svg" alt="ChatGPT 官方 Logo" /></span>
+          <span class="brand-name">ChatGPT Team</span>
         </div>
-        <div class="cdk-entry">
-          <label class="sr-only" for="cdk-input">CDK</label>
-          <div class="cdk-control-wrap">
-            <span class="cdk-key" aria-hidden="true">◆</span>
-            <input
-              id="cdk-input"
-              class="cdk-input"
-              type="text"
-              inputmode="text"
-              maxlength="19"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="XXXX-XXXX-XXXX-XXXX"
-            />
-            <button id="cdk-verify-btn" class="cdk-verify-btn" type="button">
-              <span class="cdk-verify-label">校核 CDK</span>
-              <span class="cdk-spinner" aria-hidden="true"></span>
-            </button>
+        <div class="gate-copy">
+          <span class="eyebrow">安全访问</span>
+          <h1 id="gate-title">长链工作台</h1>
+          <p>请输入管理员发放的 CDK。校验成功后，才会进入正式提链页面。</p>
+        </div>
+        <form id="cdk-form" class="gate-form" novalidate>
+          <label for="cdk-input">CDK 授权码</label>
+          <div class="gate-input-wrap">
+            <input id="cdk-input" name="cdk" type="text" autocomplete="off" spellcheck="false" maxlength="32" placeholder="XXXX-XXXX-XXXX-XXXX" aria-describedby="cdk-hint" required />
+            <span class="gate-key" aria-hidden="true">⌁</span>
           </div>
-          <div id="cdk-status" class="cdk-status" data-state="locked" aria-live="polite">
-            <span class="cdk-status-dot" aria-hidden="true"></span>
-            <span class="cdk-status-text">等待验证，下面的工具暂未解锁</span>
-          </div>
+          <button id="cdk-submit" class="button button-primary button-large" type="submit"><span>验证并进入</span><span aria-hidden="true">→</span></button>
+          <p id="cdk-hint" class="field-hint">CDK 只保留在当前页面内存中，刷新后需要重新验证。</p>
+          <div id="cdk-status" class="inline-status" role="status" aria-live="polite"></div>
+        </form>
+        <div class="gate-trust" aria-label="安全说明">
+          <span><i></i> 服务端二次校验</span><span><i></i> 国家代理路由</span><span><i></i> 不保存 Token</span>
         </div>
       </section>
+      <p class="gate-footer">Powered by Cloudflare Edge · 仅供授权用户使用</p>
+    </main>
 
-      <div class="divider access-divider" aria-hidden="true"></div>
-
-      <div id="tool-content" class="tool-content is-locked" aria-disabled="true">
-      <section class="country-section" aria-labelledby="country-title">
-        <div class="section-head">
-          <div>
-            <p class="step">02 / 选择结算国家</p>
-            <h2 id="country-title">结算国家与货币</h2>
-          </div>
-          <div id="proxy-overview" class="proxy-overview" aria-live="polite">正在读取代理配置…</div>
+    <div id="workbench" class="workbench" hidden>
+      <header class="topbar">
+        <a class="brand-lockup" href="/" aria-label="ChatGPT Team 长链工作台首页">
+          <span class="brand-logo brand-logo-small"><img src="/chatgpt-logo.svg" alt="" /></span>
+          <span><strong>ChatGPT Team</strong><small>长链工作台</small></span>
+        </a>
+        <div class="topbar-actions">
+          <div class="auth-chip"><span class="status-dot"></span><span><b>CDK 已验证</b><small id="cdk-remaining">授权有效</small></span></div>
+          <button id="lock-button" class="button button-ghost button-compact" type="button">退出工作台</button>
         </div>
+      </header>
 
-        <div id="country-picker" class="country-picker is-loading">
-          <button
-            id="country-trigger"
-            class="country-trigger"
-            type="button"
-            aria-haspopup="listbox"
-            aria-expanded="false"
-            aria-controls="country-menu"
-            disabled
-          >
-            <span class="country-trigger-skeleton">正在读取国家与价格…</span>
-          </button>
-          <div id="country-menu" class="country-menu" hidden>
-            <label class="country-search-wrap" for="country-search">
-              <span class="country-search-icon" aria-hidden="true"></span>
-              <input
-                id="country-search"
-                class="country-search"
-                type="search"
-                autocomplete="off"
-                placeholder="搜索国家、拼音、ISO 代码或货币…"
-              />
-            </label>
-            <div class="country-list-head">
-              <span>国家与价格列表</span>
-              <span>美元估算从低到高</span>
-            </div>
-            <div id="country-options" class="country-options" role="listbox" aria-label="国家或地区"></div>
-          </div>
-        </div>
-        <p id="country-selection" class="selection-line" aria-live="polite"></p>
-      </section>
+      <main class="workspace">
+        <section class="workspace-heading">
+          <div><span class="eyebrow">Checkout workspace</span><h1>生成 Team 支付长链</h1><p>填写账户信息与团队方案，系统将通过所选国家的代理创建支付页面。</p></div>
+          <div class="secure-note"><span aria-hidden="true">◇</span><span><b>隐私模式</b><small>Access Token 不会持久化</small></span></div>
+        </section>
 
-      <div class="divider" aria-hidden="true"></div>
-
-      <section aria-labelledby="details-title">
-        <div class="section-head details-head">
-          <div>
-            <p class="step">03 / 填写结算信息</p>
-            <h2 id="details-title">生成设置</h2>
-          </div>
-          <span class="privacy-chip">
-            <span class="privacy-dot" aria-hidden="true"></span>
-            Token 不落盘
-          </span>
-        </div>
-
-        <div class="field token-field">
-          <label class="label" for="token-input">
-            <span>Access Token</span>
-            <span class="hint">支持 eyJ… / Bearer eyJ… / session JSON</span>
-          </label>
-          <textarea
-            id="token-input"
-            class="control mono"
-            rows="3"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="eyJhbGciOi… 或 { &quot;accessToken&quot;: &quot;eyJ…&quot; }"
-          ></textarea>
-          <div id="token-meta" class="meta" data-state="empty">未输入</div>
-        </div>
-
-        <div class="form-grid">
-          <div class="seat-config-grid form-span-2">
-            <div class="seat-count-field">
-              <label class="label" for="seat-default">
-                <span>标准席位</span>
-                <span class="hint mono-label">DEFAULT</span>
+        <div class="workspace-grid">
+          <form id="checkout-form" class="workbench-card form-card" novalidate>
+            <section class="form-section">
+              <div class="section-title-row"><div><span class="step-number">01</span><h2>账户凭证</h2></div><span class="section-tag">必填</span></div>
+              <label class="field-block" for="access-token">
+                <span class="field-label">Access Token</span>
+                <span class="secret-input"><textarea id="access-token" rows="3" autocomplete="off" spellcheck="false" placeholder="粘贴 eyJ... 或包含 accessToken 的 JSON" required></textarea><button id="toggle-token" class="icon-button" type="button" aria-label="显示或隐藏 Token">◉</button></span>
+                <span class="field-hint">仅用于本次请求，不会写入浏览器存储。</span>
               </label>
-              <div class="seat-stepper">
-                <button class="seat-step" type="button" data-seat-target="seat-default" data-step="-1" aria-label="减少标准席位">−</button>
-                <input id="seat-default" class="seat-count" type="number" min="0" max="999" step="1" value="2" inputmode="numeric" />
-                <button class="seat-step" type="button" data-seat-target="seat-default" data-step="1" aria-label="增加标准席位">+</button>
+            </section>
+
+            <section class="form-section">
+              <div class="section-title-row"><div><span class="step-number">02</span><h2>地区与账期</h2></div></div>
+              <div class="two-column-fields">
+                <div class="field-block country-field">
+                  <span class="field-label">支付国家 / 地区</span>
+                  <button id="country-trigger" class="select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false"><span id="country-trigger-main" class="select-main">加载国家列表…</span><span class="chevron">⌄</span></button>
+                  <div id="country-menu" class="country-menu" hidden>
+                    <div class="country-search-wrap"><span>⌕</span><input id="country-search" type="search" autocomplete="off" placeholder="搜索国家、代码或拼音" /></div>
+                    <div class="country-menu-head"><span>国家 / 币种</span><span>当地 / USD</span></div>
+                    <div id="country-options" class="country-options" role="listbox"></div>
+                  </div>
+                  <input id="country" name="country" type="hidden" />
+                </div>
+                <fieldset class="field-block billing-field">
+                  <legend class="field-label">付费周期</legend>
+                  <div class="segmented-control"><label><input type="radio" name="billing-period" value="month" checked /><span>月付<small>Monthly</small></span></label><label><input type="radio" name="billing-period" value="year" /><span>年付<small>Annual</small></span></label></div>
+                </fieldset>
               </div>
-            </div>
-
-            <div class="seat-count-field">
-              <label class="label" for="seat-prolite">
-                <span>高级席位</span>
-                <span class="hint mono-label">PROLITE</span>
-              </label>
-              <div class="seat-stepper">
-                <button class="seat-step" type="button" data-seat-target="seat-prolite" data-step="-1" aria-label="减少高级席位">−</button>
-                <input id="seat-prolite" class="seat-count" type="number" min="0" max="999" step="1" value="0" inputmode="numeric" />
-                <button class="seat-step" type="button" data-seat-target="seat-prolite" data-step="1" aria-label="增加高级席位">+</button>
+              <div id="price-reference" class="price-reference">
+                <div><span id="price-flag" class="price-flag">🌐</span><span><b id="price-country">请选择国家</b><small id="price-currency">币种自动匹配</small></span></div>
+                <div class="price-values"><span><small>当地参考月价</small><b id="price-local">—</b></span><span><small>折合美元</small><b id="price-usd">—</b></span></div>
               </div>
-            </div>
+            </section>
 
-            <fieldset class="billing-field">
-              <legend class="label">
-                <span>计费周期</span>
-                <span id="seat-total" class="hint">合计 2 席</span>
-              </legend>
-              <div class="billing-toggle">
-                <label>
-                  <input type="radio" name="billing-period" value="month" checked />
-                  <span>按月付</span>
-                </label>
-                <label>
-                  <input type="radio" name="billing-period" value="year" />
-                  <span>按年付</span>
-                </label>
+            <section class="form-section">
+              <div class="section-title-row"><div><span class="step-number">03</span><h2>团队席位</h2></div><span id="seat-total-chip" class="section-tag section-tag-dark">共 2 席</span></div>
+              <div class="seat-grid">
+                <article class="seat-card"><div class="seat-icon standard">S</div><div class="seat-copy"><b>标准席位</b><small>Default seat</small></div><div class="stepper" data-target="seat-default"><button type="button" data-step="-1" aria-label="减少标准席位">−</button><input id="seat-default" type="number" min="0" max="999" step="1" value="2" inputmode="numeric" /><button type="button" data-step="1" aria-label="增加标准席位">＋</button></div></article>
+                <article class="seat-card"><div class="seat-icon pro">P</div><div class="seat-copy"><b>高级席位</b><small>Prolite seat</small></div><div class="stepper" data-target="seat-prolite"><button type="button" data-step="-1" aria-label="减少高级席位">−</button><input id="seat-prolite" type="number" min="0" max="999" step="1" value="0" inputmode="numeric" /><button type="button" data-step="1" aria-label="增加高级席位">＋</button></div></article>
               </div>
-            </fieldset>
-          </div>
+              <p id="seat-message" class="field-hint">标准席位和高级席位可以同时选择，合计至少 2 席。</p>
+            </section>
 
-          <div class="field form-span-2">
-            <label class="label" for="workspace-name">
-              <span>新建空间名</span>
-              <span class="hint">最多 80 字符</span>
-            </label>
-            <input id="workspace-name" class="control" type="text" value="myWorkspace" maxlength="80" />
-          </div>
+            <section class="form-section form-section-last">
+              <div class="section-title-row"><div><span class="step-number">04</span><h2>订单信息</h2></div><span class="section-tag section-tag-muted">可选</span></div>
+              <div class="two-column-fields">
+                <label class="field-block" for="workspace-name"><span class="field-label">团队名称</span><input id="workspace-name" type="text" maxlength="80" value="myWorkspace" placeholder="myWorkspace" /></label>
+                <label class="field-block" for="promo-code"><span class="field-label">优惠码 / 优惠链接</span><input id="promo-code" type="text" maxlength="240" autocomplete="off" placeholder="可粘贴 chatgpt.com/p/..." /></label>
+              </div>
+            </section>
 
-          <div class="field form-span-2">
-            <label class="label" for="promo-input">
-              <span>优惠码 <span class="optional">（可选）</span></span>
-              <span class="hint">留空则不传 promo_code</span>
-            </label>
-            <input id="promo-input" class="control mono" type="text" autocomplete="off" placeholder="例如 SPRING50" />
-          </div>
+            <div id="form-status" class="inline-status form-status" role="status" aria-live="polite"></div>
+            <button id="generate-button" class="button button-primary submit-button" type="submit"><span id="generate-label">生成支付长链</span><span aria-hidden="true">↗</span></button>
+          </form>
+
+          <aside class="side-column">
+            <section class="workbench-card summary-card">
+              <div class="summary-head"><span>订单预览</span><small>实时同步</small></div>
+              <div class="summary-country"><span id="summary-flag">🌐</span><span><b id="summary-country">等待选择</b><small id="summary-route">代理路由未就绪</small></span></div>
+              <dl><div><dt>付费周期</dt><dd id="summary-billing">月付</dd></div><div><dt>标准席位</dt><dd id="summary-default">2</dd></div><div><dt>高级席位</dt><dd id="summary-prolite">0</dd></div><div class="summary-total"><dt>席位合计</dt><dd id="summary-total">2</dd></div></dl>
+              <div class="summary-tip"><span>i</span><p>价格仅供地区对比参考，最终金额以 ChatGPT Checkout 页面为准。</p></div>
+            </section>
+            <section id="result-card" class="workbench-card result-card" hidden>
+              <div class="result-icon">✓</div><div><span class="eyebrow">Checkout ready</span><h2>长链生成成功</h2><p>支付页面已创建，可以复制或在新窗口打开。</p></div>
+              <label for="result-url">支付长链</label><div class="result-url-wrap"><input id="result-url" type="text" readonly /><button id="copy-result" type="button">复制</button></div>
+              <a id="open-result" class="button button-dark" href="#" target="_blank" rel="noopener noreferrer">打开支付页面 ↗</a>
+            </section>
+            <section class="help-card"><span>?</span><div><b>遇到问题？</b><p>请先确认国家代理已配置、Token 有效，并且席位合计不少于 2。</p></div></section>
+          </aside>
         </div>
-
-        <label class="check">
-          <input id="auto-open" type="checkbox" />
-          <span class="check-box" aria-hidden="true"></span>
-          <span>生成成功后自动打开支付页面</span>
-        </label>
-
-        <div class="actions">
-          <button id="generate-btn" class="primary" type="submit">
-            <span class="spinner" aria-hidden="true"></span>
-            <span class="label-text">生成 Team 支付长链</span>
-            <svg class="button-arrow" viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M4 10h11m-4-4 4 4-4 4" />
-            </svg>
-          </button>
-          <button id="clear-btn" class="ghost" type="button">重置</button>
-        </div>
-      </section>
-
-      <div id="result" class="result" role="status" aria-live="polite"></div>
-      </div>
-    </form>
-
-    <footer class="foot">
-      <span>Cloudflare Worker</span>
-      <span aria-hidden="true">·</span>
-      <span>按国家隔离出口</span>
-      <span aria-hidden="true">·</span>
-      <span>CDK 哈希存储</span>
-      <span aria-hidden="true">·</span>
-      <a href="/admin">管理后台</a>
-    </footer>
-  </main>
-
-  <script src="./app.js"></script>
-</body>
+      </main>
+      <footer class="site-footer"><span>ChatGPT Team 长链工作台</span><span>Secure · Private · Edge-powered</span></footer>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
 </html>

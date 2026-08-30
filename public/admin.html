@@ -1,183 +1,103 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="color-scheme" content="light" />
-  <meta name="theme-color" content="#17201b" />
-  <title>授权与代理管理后台</title>
-  <link rel="stylesheet" href="./style.css" />
-  <link rel="stylesheet" href="./admin.css" />
-</head>
-<body class="admin-body">
-  <main class="admin-shell">
-    <header class="admin-head">
-      <a class="admin-brand" href="/" aria-label="返回支付长链生成器">
-        <span class="admin-brand-mark" aria-hidden="true">◆</span>
-        <span>
-          <small>CHECKOUT CONTROL</small>
-          <strong>授权与代理后台</strong>
-        </span>
-      </a>
-      <div class="admin-head-actions">
-        <span id="admin-session" class="admin-session" hidden><i></i>管理会话已连接</span>
-        <button id="logout-btn" class="admin-text-btn" type="button" hidden>退出管理</button>
-        <a class="admin-text-link" href="/">返回生成器 ↗</a>
-      </div>
-    </header>
-
-    <section id="login-panel" class="login-panel" aria-labelledby="login-title">
-      <div class="login-graphic" aria-hidden="true">
-        <span class="orbit orbit-one"></span>
-        <span class="orbit orbit-two"></span>
-        <span class="login-glyph">◆</span>
-      </div>
-      <div class="login-content">
-        <p class="admin-kicker">RESTRICTED ACCESS</p>
-        <h1 id="login-title">验证管理员身份</h1>
-        <p>输入 Worker 后台设置的 ADMIN_TOKEN。凭据只保存在当前页面内存中，关闭或刷新页面后自动清除。</p>
-        <form id="login-form" class="admin-login-form">
-          <label for="admin-token">管理 Token</label>
-          <div class="admin-token-row">
-            <input id="admin-token" type="password" autocomplete="off" placeholder="输入 ADMIN_TOKEN" required />
-            <button id="login-btn" type="submit">进入控制台</button>
-          </div>
-          <p id="login-message" class="admin-message" aria-live="polite"></p>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>管理后台 · ChatGPT Team 长链工作台</title>
+    <link rel="icon" href="/chatgpt-logo.svg" />
+    <link rel="stylesheet" href="/admin.css" />
+    <script defer src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT" crossorigin="anonymous"></script>
+  </head>
+  <body>
+    <main id="login-view" class="login-view">
+      <section class="login-card">
+        <div class="login-brand"><span class="logo"><img src="/chatgpt-logo.svg" alt="ChatGPT 官方 Logo" /></span><span><b>ChatGPT Team</b><small>长链工作台 · 管理后台</small></span></div>
+        <div class="login-copy"><span class="eyebrow">Administrator</span><h1>欢迎回来</h1><p>登录后可管理 CDK、优惠码库存和国家代理。管理员密码只保留在当前页面内存中。</p></div>
+        <form id="login-form" novalidate>
+          <label for="admin-token">管理员密码</label><input id="admin-token" type="password" autocomplete="current-password" placeholder="请输入后台密码" required />
+          <button id="login-button" class="button button-primary" type="submit"><span>进入管理后台</span><span>→</span></button>
+          <div id="login-status" class="status" role="status" aria-live="polite"></div>
         </form>
+        <a class="back-link" href="/">← 返回长链工作台</a>
+      </section>
+    </main>
+
+    <div id="admin-app" class="admin-app" hidden>
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-brand"><span class="logo logo-small"><img src="/chatgpt-logo.svg" alt="" /></span><span><b>Team Console</b><small>长链管理后台</small></span></div>
+        <nav class="sidebar-nav" aria-label="管理功能">
+          <span class="nav-label">工作区</span>
+          <button class="nav-item active" type="button" data-view="overview"><span class="nav-icon">⌂</span><span>概览</span></button>
+          <button class="nav-item" type="button" data-view="cdks"><span class="nav-icon">◇</span><span>CDK 管理</span><span id="nav-cdk-count" class="nav-count">0</span></button>
+          <button class="nav-item" type="button" data-view="promos"><span class="nav-icon">%</span><span>优惠码</span><span id="nav-promo-count" class="nav-count">0</span></button>
+          <button class="nav-item" type="button" data-view="proxies"><span class="nav-icon">◎</span><span>国家代理</span><span id="nav-proxy-count" class="nav-count">0</span></button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="service-state"><span id="service-dot"></span><span><b id="service-title">服务检查中</b><small id="service-detail">正在读取配置</small></span></div>
+          <a href="/" target="_blank" rel="noopener noreferrer">打开长链工作台 ↗</a><button id="logout-button" type="button">退出登录</button>
+        </div>
+      </aside>
+
+      <div class="admin-main">
+        <header class="admin-header">
+          <button id="menu-button" class="menu-button" type="button" aria-label="打开导航">☰</button>
+          <div><span id="page-eyebrow" class="eyebrow">Dashboard</span><h1 id="page-title">运营概览</h1></div>
+          <div class="header-actions"><button id="refresh-button" class="button button-secondary button-small" type="button">刷新数据</button><div class="admin-avatar">A</div></div>
+        </header>
+
+        <main class="content">
+          <div id="global-status" class="status global-status" role="status" aria-live="polite"></div>
+          <section class="view active" data-view-panel="overview">
+            <div class="welcome-panel"><div><span class="eyebrow">Team operations</span><h2>今天也要保持库存充足。</h2><p>从一个清晰的控制台管理授权、优惠码与代理路由。</p></div><div class="welcome-badge"><span>✓</span><div><b>安全存储已开启</b><small>CDK 哈希 · 优惠码/代理加密</small></div></div></div>
+            <div class="stat-grid">
+              <article class="stat-card"><div class="stat-icon mint">◇</div><span>有效 CDK</span><strong id="overview-cdk-active">—</strong><small id="overview-cdk-total">共 — 个授权</small></article>
+              <article class="stat-card"><div class="stat-icon violet">%</div><span>可用优惠码</span><strong id="overview-promo-available">—</strong><small id="overview-promo-total">总库存 —</small></article>
+              <article class="stat-card"><div class="stat-icon blue">◎</div><span>已配代理</span><strong id="overview-proxy-ready">—</strong><small id="overview-proxy-total">共 9 个国家</small></article>
+              <article class="stat-card"><div class="stat-icon amber">↗</div><span>已分配优惠码</span><strong id="overview-promo-assigned">—</strong><small>随 CDK 自动发放</small></article>
+            </div>
+            <div class="overview-grid">
+              <section class="panel"><div class="panel-heading"><div><span class="eyebrow">Quick actions</span><h3>常用操作</h3></div></div><div class="quick-actions"><button type="button" data-open-view="cdks"><span class="quick-icon mint">◇</span><span><b>生成 CDK</b><small>自动分配优惠码并复制交付文本</small></span><i>→</i></button><button type="button" data-open-view="promos"><span class="quick-icon violet">%</span><span><b>导入优惠码</b><small>支持 Excel、CSV、TXT 和批量粘贴</small></span><i>→</i></button><button type="button" data-open-view="proxies"><span class="quick-icon blue">◎</span><span><b>配置国家代理</b><small>导入后测试出口 IP 与延迟</small></span><i>→</i></button></div></section>
+              <section class="panel"><div class="panel-heading"><div><span class="eyebrow">Inventory</span><h3>优惠码库存</h3></div><button class="text-button" type="button" data-open-view="promos">查看全部</button></div><div id="inventory-list" class="inventory-list"></div></section>
+            </div>
+          </section>
+
+          <section class="view" data-view-panel="cdks" hidden>
+            <div class="page-grid page-grid-form">
+              <section class="panel sticky-panel"><div class="panel-heading"><div><span class="eyebrow">Issue access</span><h3>生成 CDK</h3><p>每个 CDK 会自动占用一条指定国家的优惠码。</p></div></div><form id="cdk-create-form" class="admin-form" novalidate>
+                <label>内部备注<input id="cdk-label" type="text" maxlength="80" placeholder="例如：客户 A / 订单号" /></label>
+                <div class="form-row"><label>生成数量<input id="cdk-count" type="number" min="1" max="50" value="1" /></label><label>每码可用次数<input id="cdk-max-uses" type="number" min="1" max="100000" value="10" /></label></div>
+                <div class="form-row"><label>有效天数<input id="cdk-expiry" type="number" min="0" max="3650" value="30" /><small>0 表示长期有效</small></label><label>优惠码国家<select id="cdk-promo-country"><option value="GB">🇬🇧 英国 · GB</option></select><small id="cdk-inventory-hint">读取库存中…</small></label></div>
+                <button id="cdk-create-button" class="button button-primary" type="submit">生成并分配优惠码</button><div id="cdk-create-status" class="status" role="status" aria-live="polite"></div>
+              </form></section>
+              <section class="panel issued-panel"><div class="panel-heading"><div><span class="eyebrow">One-time delivery</span><h3>本次生成结果</h3><p>CDK 与优惠码明文仅在本次响应显示，请立即复制。</p></div><button id="copy-all-bundles" class="button button-secondary button-small" type="button" hidden>复制全部</button></div><div id="issued-empty" class="empty-state"><span>◇</span><b>还没有新生成的 CDK</b><p>在左侧填写参数并生成，结果会出现在这里。</p></div><div id="issued-bundles" class="issued-bundles"></div></section>
+            </div>
+            <section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">Access records</span><h3>CDK 记录</h3></div><div class="filter-pills"><button class="active" type="button" data-cdk-filter="all">全部</button><button type="button" data-cdk-filter="active">有效</button><button type="button" data-cdk-filter="inactive">失效</button></div></div><div class="table-wrap"><table><thead><tr><th>CDK</th><th>备注</th><th>优惠码</th><th>使用进度</th><th>有效期</th><th>状态</th><th></th></tr></thead><tbody id="cdk-table-body"></tbody></table></div></section>
+          </section>
+
+          <section class="view" data-view-panel="promos" hidden>
+            <div class="promo-stats stat-grid compact-stats"><article class="stat-card"><span>总库存</span><strong id="promo-total">—</strong><small>未删除的优惠码</small></article><article class="stat-card"><span>可分配</span><strong id="promo-available">—</strong><small>可立即用于 CDK</small></article><article class="stat-card"><span>已分配</span><strong id="promo-assigned">—</strong><small>已绑定 CDK</small></article></div>
+            <div class="page-grid promo-grid">
+              <section class="panel"><div class="panel-heading"><div><span class="eyebrow">Import inventory</span><h3>导入优惠码</h3><p>表格中的内容只作为数据读取，系统不会执行任何单元格指令。</p></div></div><form id="promo-import-form" class="admin-form" novalidate>
+                <div class="form-row"><label>所属国家<select id="promo-country"><option value="GB">🇬🇧 英国 · GB</option></select></label><label>批次名称<input id="promo-batch" type="text" maxlength="80" value="GB-promo code" placeholder="例如：2026-08 GB" /></label></div>
+                <label>粘贴优惠码 / 优惠链接<textarea id="promo-text" rows="7" placeholder="每行一条，例如：&#10;chatgpt.com/p/XXXXXXXX"></textarea><small>支持换行、逗号、分号或制表符分隔。</small></label>
+                <div class="upload-box"><input id="promo-file" type="file" accept=".xlsx,.xls,.csv,.txt" /><span class="upload-icon">⇧</span><div><b>或选择 Excel / CSV / TXT 文件</b><small id="promo-file-label">将读取所有非空单元格</small></div><button id="clear-promo-file" type="button" hidden>移除</button></div>
+                <button id="promo-import-button" class="button button-primary" type="submit">导入优惠码</button><div id="promo-import-status" class="status" role="status" aria-live="polite"></div>
+              </form></section>
+              <section class="panel inventory-guide"><div class="panel-heading"><div><span class="eyebrow">Allocation rules</span><h3>自动分配规则</h3></div></div><ol><li><span>1</span><div><b>按国家选池</b><p>生成 CDK 时从所选国家的可用库存中领取。</p></div></li><li><span>2</span><div><b>原子占用</b><p>同一条优惠码不会并发分配给两个 CDK。</p></div></li><li><span>3</span><div><b>一次性交付</b><p>明文仅在生成结果中展示，数据库只保存加密内容。</p></div></li></ol><div class="format-preview"><span>交付格式</span><pre>自助提链：https://你的站点/&#10;CDK：XXXX-XXXX-XXXX-XXXX&#10;优惠码：https://chatgpt.com/p/...</pre></div></section>
+            </div>
+            <section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">Promo inventory</span><h3>优惠码明细</h3></div><div class="filter-pills"><button class="active" type="button" data-promo-filter="all">全部</button><button type="button" data-promo-filter="available">可用</button><button type="button" data-promo-filter="assigned">已分配</button></div></div><div class="table-wrap"><table><thead><tr><th>优惠码</th><th>国家</th><th>批次</th><th>导入时间</th><th>分配 CDK</th><th>状态</th><th></th></tr></thead><tbody id="promo-table-body"></tbody></table></div></section>
+          </section>
+
+          <section class="view" data-view-panel="proxies" hidden>
+            <div class="page-grid proxy-grid"><section class="panel"><div class="panel-heading"><div><span class="eyebrow">Single route</span><h3>单个导入</h3><p>支持带用户名和密码的 HTTP / HTTPS 代理。</p></div></div><form id="proxy-single-form" class="admin-form" novalidate><label>国家<select id="proxy-country"></select></label><label>代理 URL<input id="proxy-url" type="password" autocomplete="off" placeholder="http://user:password@host:port" /></label><button id="proxy-save-button" class="button button-primary" type="submit">保存并加密</button><div id="proxy-single-status" class="status" role="status" aria-live="polite"></div></form></section>
+              <section class="panel"><div class="panel-heading"><div><span class="eyebrow">Batch routes</span><h3>批量导入</h3><p>每行一条 COUNTRY=URL，或粘贴 JSON 对象。</p></div></div><form id="proxy-batch-form" class="admin-form" novalidate><label>代理配置<textarea id="proxy-batch" rows="7" placeholder="US=http://user:pass@host:port&#10;GB=http://user:pass@host:port"></textarea></label><button id="proxy-batch-button" class="button button-secondary" type="submit">批量保存</button><div id="proxy-batch-status" class="status" role="status" aria-live="polite"></div></form></section></div>
+            <section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">Route health</span><h3>国家代理状态</h3></div><span class="panel-note">测试会通过 Relay 获取出口 IP 与延迟</span></div><div id="proxy-grid" class="proxy-cards"></div></section>
+          </section>
+        </main>
       </div>
-    </section>
-
-    <div id="admin-dashboard" class="admin-dashboard" hidden>
-      <section class="dashboard-title-row">
-        <div>
-          <p class="admin-kicker">CHECKOUT OPERATIONS</p>
-          <h1>授权与路由控制台</h1>
-          <p>管理 CDK 使用权限，以及各国家的加密代理路由。</p>
-        </div>
-        <button id="refresh-btn" class="admin-outline-btn" type="button">↻ 刷新数据</button>
-      </section>
-
-      <section class="stat-grid" aria-label="CDK 统计">
-        <article class="stat-card stat-total"><span>记录总数</span><strong id="stat-total">0</strong><small>当前列表</small></article>
-        <article class="stat-card stat-active"><span>有效授权</span><strong id="stat-active">0</strong><small>可立即使用</small></article>
-        <article class="stat-card"><span>次数耗尽</span><strong id="stat-exhausted">0</strong><small>达到上限</small></article>
-        <article class="stat-card"><span>失效记录</span><strong id="stat-inactive">0</strong><small>过期或吊销</small></article>
-      </section>
-
-      <section class="admin-panel proxy-panel" aria-labelledby="proxy-panel-title">
-        <div class="panel-heading proxy-heading">
-          <span class="panel-number">01</span>
-          <div>
-            <h2 id="proxy-panel-title">国家代理路由</h2>
-            <p>代理凭据使用 AES-GCM 加密存入 D1；保存后仅展示脱敏地址。</p>
-          </div>
-          <span id="proxy-count" class="proxy-count">0 / 8 已配置</span>
-        </div>
-
-        <div class="proxy-editor-grid">
-          <form id="proxy-form" class="proxy-editor-card">
-            <div class="proxy-editor-title"><strong>单个导入</strong><span>保存会替换该国家现有代理</span></div>
-            <div class="proxy-input-row">
-              <label class="admin-field">
-                <span>国家</span>
-                <select id="proxy-country" required>
-                  <option value="US">🇺🇸 美国 · US</option>
-                  <option value="EG">🇪🇬 埃及 · EG</option>
-                  <option value="GB">🇬🇧 英国 · GB</option>
-                  <option value="CL">🇨🇱 智利 · CL</option>
-                  <option value="PH">🇵🇭 菲律宾 · PH</option>
-                  <option value="JP">🇯🇵 日本 · JP</option>
-                  <option value="TH">🇹🇭 泰国 · TH</option>
-                  <option value="IN">🇮🇳 印度 · IN</option>
-                  <option value="SE">🇸🇪 瑞典 · SE</option>
-                </select>
-              </label>
-              <label class="admin-field proxy-url-field">
-                <span>HTTP / HTTPS 代理地址</span>
-                <input id="proxy-url" type="password" autocomplete="off" spellcheck="false"
-                  placeholder="http://user:password@host:port" required />
-              </label>
-              <button id="save-proxy-btn" class="admin-primary-btn" type="submit">加密保存</button>
-            </div>
-            <p id="proxy-message" class="admin-message" aria-live="polite"></p>
-          </form>
-
-          <form id="proxy-batch-form" class="proxy-editor-card proxy-batch-card">
-            <div class="proxy-editor-title"><strong>批量导入</strong><span>支持逐行或 JSON；只覆盖本次包含的国家</span></div>
-            <label class="admin-field">
-              <span>代理清单</span>
-              <textarea id="proxy-batch" autocomplete="off" spellcheck="false"
-                placeholder="US=http://user:password@host:port&#10;JP=http://user:password@host:port"></textarea>
-            </label>
-            <div class="proxy-batch-actions">
-              <small>JSON 示例：{&quot;US&quot;:&quot;http://…&quot;,&quot;JP&quot;:&quot;http://…&quot;}</small>
-              <button id="batch-proxy-btn" class="admin-outline-btn" type="submit">批量加密导入</button>
-            </div>
-            <p id="proxy-batch-message" class="admin-message" aria-live="polite"></p>
-          </form>
-        </div>
-
-        <div id="proxy-route-grid" class="proxy-route-grid" aria-live="polite"></div>
-      </section>
-
-      <section class="admin-workspace">
-        <article class="admin-panel generator-panel">
-          <div class="panel-heading">
-            <span class="panel-number">02</span>
-            <div><h2>签发新 CDK</h2><p>明文授权码仅在生成后展示一次。</p></div>
-          </div>
-          <form id="generate-form" class="generate-form">
-            <label class="admin-field admin-field-wide">
-              <span>备注</span>
-              <input id="cdk-label" type="text" maxlength="80" placeholder="例如：8 月客户 A" />
-            </label>
-            <label class="admin-field">
-              <span>生成数量</span>
-              <input id="cdk-count" type="number" min="1" max="50" value="1" required />
-              <small>单次最多 50 个</small>
-            </label>
-            <label class="admin-field">
-              <span>每个可用次数</span>
-              <input id="cdk-max-uses" type="number" min="1" max="100000" value="10" required />
-              <small>每次生成支付链扣 1 次</small>
-            </label>
-            <label class="admin-field admin-field-wide">
-              <span>有效天数</span>
-              <input id="cdk-expiry" type="number" min="0" max="3650" value="30" required />
-              <small>填写 0 表示长期有效</small>
-            </label>
-            <button id="generate-cdk-btn" class="admin-primary-btn" type="submit">生成 CDK</button>
-            <p id="generate-message" class="admin-message admin-field-wide" aria-live="polite"></p>
-          </form>
-        </article>
-
-        <article id="generated-panel" class="admin-panel generated-panel" hidden>
-          <div class="panel-heading generated-heading">
-            <span class="panel-number">✓</span>
-            <div><h2>本次生成结果</h2><p>请立即复制保存，刷新后无法再次查看明文。</p></div>
-            <button id="copy-all-btn" class="admin-outline-btn" type="button">复制全部</button>
-          </div>
-          <div id="generated-codes" class="generated-codes"></div>
-        </article>
-      </section>
-
-      <section class="admin-panel inventory-panel">
-        <div class="panel-heading inventory-heading">
-          <span class="panel-number">03</span>
-          <div><h2>授权记录</h2><p>数据库只保留哈希与末四位，无法恢复完整 CDK。</p></div>
-        </div>
-        <div class="table-wrap">
-          <table class="cdk-table">
-            <thead>
-              <tr><th>CDK</th><th>备注</th><th>使用情况</th><th>有效期</th><th>状态</th><th><span class="sr-only">操作</span></th></tr>
-            </thead>
-            <tbody id="cdk-table-body"></tbody>
-          </table>
-          <div id="table-empty" class="table-empty" hidden>还没有 CDK，先签发第一批授权码。</div>
-        </div>
-      </section>
     </div>
-  </main>
-  <script src="./admin.js"></script>
-</body>
+    <div id="mobile-backdrop" class="mobile-backdrop" hidden></div>
+    <script type="module" src="/admin.js"></script>
+  </body>
 </html>

@@ -1,499 +1,189 @@
-(function () {
-  'use strict';
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => [...document.querySelectorAll(selector)];
 
-  var adminToken = '';
-  var lastGeneratedCodes = [];
-  var dom = {};
-  var countries = [
-    { code: 'US', name: '美国', flag: '🇺🇸' },
-    { code: 'EG', name: '埃及', flag: '🇪🇬' },
-    { code: 'GB', name: '英国', flag: '🇬🇧' },
-    { code: 'CL', name: '智利', flag: '🇨🇱' },
-    { code: 'PH', name: '菲律宾', flag: '🇵🇭' },
-    { code: 'JP', name: '日本', flag: '🇯🇵' },
-    { code: 'TH', name: '泰国', flag: '🇹🇭' },
-    { code: 'IN', name: '印度', flag: '🇮🇳' },
-    { code: 'SE', name: '瑞典', flag: '🇸🇪' }
-  ];
+const elements = {
+  loginView: $('#login-view'), loginForm: $('#login-form'), adminToken: $('#admin-token'), loginButton: $('#login-button'), loginStatus: $('#login-status'),
+  app: $('#admin-app'), sidebar: $('#sidebar'), backdrop: $('#mobile-backdrop'), menuButton: $('#menu-button'), logoutButton: $('#logout-button'), refreshButton: $('#refresh-button'),
+  pageTitle: $('#page-title'), pageEyebrow: $('#page-eyebrow'), globalStatus: $('#global-status'), serviceDot: $('#service-dot'), serviceTitle: $('#service-title'), serviceDetail: $('#service-detail'),
+  navCdkCount: $('#nav-cdk-count'), navPromoCount: $('#nav-promo-count'), navProxyCount: $('#nav-proxy-count'),
+  overviewCdkActive: $('#overview-cdk-active'), overviewCdkTotal: $('#overview-cdk-total'), overviewPromoAvailable: $('#overview-promo-available'), overviewPromoTotal: $('#overview-promo-total'), overviewProxyReady: $('#overview-proxy-ready'), overviewProxyTotal: $('#overview-proxy-total'), overviewPromoAssigned: $('#overview-promo-assigned'), inventoryList: $('#inventory-list'),
+  cdkForm: $('#cdk-create-form'), cdkLabel: $('#cdk-label'), cdkCount: $('#cdk-count'), cdkMaxUses: $('#cdk-max-uses'), cdkExpiry: $('#cdk-expiry'), cdkPromoCountry: $('#cdk-promo-country'), cdkInventoryHint: $('#cdk-inventory-hint'), cdkCreateButton: $('#cdk-create-button'), cdkCreateStatus: $('#cdk-create-status'), cdkTableBody: $('#cdk-table-body'),
+  issuedEmpty: $('#issued-empty'), issuedBundles: $('#issued-bundles'), copyAllBundles: $('#copy-all-bundles'),
+  promoTotal: $('#promo-total'), promoAvailable: $('#promo-available'), promoAssigned: $('#promo-assigned'), promoForm: $('#promo-import-form'), promoCountry: $('#promo-country'), promoBatch: $('#promo-batch'), promoText: $('#promo-text'), promoFile: $('#promo-file'), promoFileLabel: $('#promo-file-label'), clearPromoFile: $('#clear-promo-file'), promoImportButton: $('#promo-import-button'), promoImportStatus: $('#promo-import-status'), promoTableBody: $('#promo-table-body'),
+  proxySingleForm: $('#proxy-single-form'), proxyCountry: $('#proxy-country'), proxyUrl: $('#proxy-url'), proxySaveButton: $('#proxy-save-button'), proxySingleStatus: $('#proxy-single-status'), proxyBatchForm: $('#proxy-batch-form'), proxyBatch: $('#proxy-batch'), proxyBatchButton: $('#proxy-batch-button'), proxyBatchStatus: $('#proxy-batch-status'), proxyGrid: $('#proxy-grid'),
+};
 
-  function $(id) { return document.getElementById(id); }
+const VIEW_META = {
+  overview: ['Dashboard', '运营概览'], cdks: ['Access control', 'CDK 管理'], promos: ['Inventory', '优惠码库存'], proxies: ['Routing', '国家代理'],
+};
+const ERROR_MESSAGES = {
+  admin_unauthorized: '管理员密码错误，请重新输入。', admin_not_configured: '后台密码尚未配置。', cdk_service_not_configured: 'CDK 服务尚未配置。', cdk_database_error: 'CDK 数据库操作失败。',
+  promo_service_not_configured: '优惠码加密服务尚未配置。', promo_database_error: '优惠码数据库操作失败。', invalid_promo_import: '导入内容无效或数量超过限制。', no_valid_promo_codes: '没有识别到有效的优惠码或 chatgpt.com/p 链接。', invalid_promo_country: '优惠码国家无效。', promo_inventory_insufficient: '优惠码库存不足，请先导入后再生成 CDK。', promo_not_found_or_assigned: '优惠码不存在或已经分配，无法删除。',
+  invalid_cdk_count: 'CDK 生成数量必须为 1–50。', invalid_cdk_max_uses: '可用次数参数无效。', invalid_cdk_expiry_days: '有效天数必须为 0–3650。', cdk_not_found_or_revoked: 'CDK 不存在或已停用。',
+  proxy_service_not_configured: '代理加密服务尚未配置。', proxy_database_error: '代理数据库操作失败。', invalid_proxy_import: '代理导入格式无效。', invalid_proxy_url: '代理 URL 格式不正确。', unsupported_proxy_protocol: '仅支持 HTTP / HTTPS 代理。', unsupported_country: '国家代码不受支持。', proxy_not_found: '该国家没有已导入的代理。', relay_not_configured: 'Relay 尚未配置。', relay_probe_unreachable: 'Relay 无法连接。', relay_probe_timeout: '代理测试超时。', proxy_test_failed: '代理测试失败。',
+};
+const STATE_LABELS = { active: '有效', exhausted: '已耗尽', expired: '已过期', revoked: '已停用', available: '可用', assigned: '已分配', healthy: '健康', failed: '异常', untested: '未测试' };
 
-  function el(tag, options) {
-    var node = document.createElement(tag);
-    if (!options) return node;
-    if (options.cls) node.className = options.cls;
-    if (options.text != null) node.textContent = String(options.text);
-    if (options.attrs) {
-      Object.keys(options.attrs).forEach(function (key) { node.setAttribute(key, options.attrs[key]); });
-    }
-    if (options.children) options.children.forEach(function (child) { node.appendChild(child); });
-    return node;
+const state = { token: '', config: null, cdks: { records: [], stats: {} }, promos: { records: [], stats: {} }, proxies: [], issued: [], fileCodes: [], cdkFilter: 'all', promoFilter: 'all' };
+
+function node(tag, className = '', text = '') {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text !== '') element.textContent = text;
+  return element;
+}
+function setStatus(element, message = '', type = '') { element.textContent = message; element.className = 'status' + (element === elements.globalStatus ? ' global-status' : '') + (type ? ' ' + type : ''); }
+function errorMessage(data, fallback = '操作失败，请稍后重试。') { return ERROR_MESSAGES[data?.error] || data?.reason || data?.message || fallback; }
+function formatDate(value, fallback = '长期') { if (!value) return fallback; const date = new Date(value); return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }); }
+function countryByCode(code) { return state.config?.countries.find((country) => country.code === code); }
+function setButtonLoading(button, loading, loadingText, idleText) { button.disabled = loading; button.textContent = loading ? loadingText : idleText; }
+
+async function adminFetch(path, options = {}) {
+  const response = await fetch(path, { ...options, headers: { Authorization: `Bearer ${state.token}`, 'Content-Type': 'application/json', ...(options.headers || {}) } });
+  const data = await response.json().catch(() => ({ error: 'invalid_json' }));
+  if (!response.ok) {
+    const error = new Error(errorMessage(data)); error.data = data; error.status = response.status;
+    if (response.status === 401 && state.token) setTimeout(logout, 0);
+    throw error;
   }
+  return data;
+}
 
-  function setMessage(node, message, state) {
-    node.textContent = message || '';
-    if (state) node.dataset.state = state;
-    else node.removeAttribute('data-state');
-  }
+async function loadAllData() {
+  const [config, cdks, promos, proxies] = await Promise.all([
+    fetch('/api/config').then((response) => response.json()), adminFetch('/api/admin/cdks?limit=500'), adminFetch('/api/admin/promos?limit=1000'), adminFetch('/api/admin/proxies'),
+  ]);
+  state.config = config; state.cdks = cdks; state.promos = promos; state.proxies = proxies.records || [];
+  populateCountrySelects(); renderAll();
+}
 
-  function api(path, options) {
-    var init = options || {};
-    init.headers = Object.assign({}, init.headers || {}, { Authorization: 'Bearer ' + adminToken });
-    init.credentials = 'omit';
-    init.cache = 'no-store';
-    return fetch(path, init).then(function (response) {
-      return response.json()
-        .catch(function () { return { ok: false, error: 'invalid_response' }; })
-        .then(function (data) {
-          if (!response.ok || !data.ok) {
-            var error = new Error(data.error || 'request_failed');
-            error.status = response.status;
-            error.detail = data;
-            throw error;
-          }
-          return data;
-        });
-    });
-  }
+function populateSelect(select, onlyPromo = false) {
+  const current = select.value;
+  select.replaceChildren();
+  (state.config?.countries || []).forEach((country) => {
+    const option = node('option', '', `${country.flag} ${country.name} · ${country.code}`);
+    option.value = country.code; select.append(option);
+  });
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+  else if (onlyPromo && [...select.options].some((option) => option.value === 'GB')) select.value = 'GB';
+}
+function populateCountrySelects() { populateSelect(elements.proxyCountry); populateSelect(elements.promoCountry, true); populateSelect(elements.cdkPromoCountry, true); }
 
-  function friendlyError(error) {
-    var code = error && error.message ? error.message : String(error || '');
-    if (code === 'proxy_test_failed' && error.detail && error.detail.reason === 'proxy_authentication_failed') {
-      return '代理认证失败（407），请重新检查 Webshare 用户名、密码和账户状态';
-    }
-    if (code === 'proxy_test_failed' && error.detail && error.detail.reason === 'proxy_payment_required') {
-      return '代理服务返回 402，请检查 Webshare 套餐是否到期或流量额度是否耗尽';
-    }
-    var messages = {
-      admin_unauthorized: '管理 Token 不正确',
-      admin_not_configured: 'Worker 尚未配置 ADMIN_TOKEN',
-      cdk_service_not_configured: 'D1 或 CDK_HASH_PEPPER 尚未配置',
-      cdk_database_error: 'CDK 数据库不可用，请检查是否已执行 D1 迁移',
-      proxy_service_not_configured: 'D1 或 PROXY_ENCRYPTION_KEY 尚未配置',
-      proxy_database_error: '代理数据库不可用，请执行最新 D1 迁移',
-      proxy_decryption_failed: '代理无法解密，请确认 PROXY_ENCRYPTION_KEY 未被更换',
-      relay_not_configured: '尚未配置 RELAY_CONFIG，无法使用或测试代理',
-      relay_config_invalid: 'RELAY_CONFIG 格式或地址不正确',
-      invalid_proxy_url: '代理地址格式不正确，请使用完整 URL',
-      unsupported_proxy_protocol: '代理仅支持 http:// 或 https://',
-      invalid_proxy_import: '导入内容为空、重复或格式不正确',
-      proxy_not_found: '该国家尚未保存代理',
-      proxy_test_failed: '代理连通性测试失败，请检查地址、凭据和 Relay',
-      unsupported_country: '国家代码不在支持清单中',
-      invalid_cdk_count: '生成数量必须是 1–50',
-      invalid_cdk_max_uses: '可用次数必须是 1–100000',
-      invalid_cdk_expiry_days: '有效天数必须是 0–3650',
-      cdk_not_found_or_revoked: '记录不存在或已被吊销',
-      request_failed: '请求失败，请稍后重试',
-      invalid_response: '后台返回了无法识别的响应'
-    };
-    return messages[code] || '操作失败：' + code;
-  }
+function renderAll() { renderOverview(); renderCdks(); renderPromos(); renderProxies(); renderServiceState(); }
+function renderServiceState() {
+  const ready = Boolean(state.config?.cdkServiceReady && state.config?.promoServiceReady && state.config?.proxyAdminReady);
+  elements.serviceDot.classList.toggle('healthy', ready); elements.serviceTitle.textContent = ready ? '核心服务正常' : '部分服务待配置';
+  elements.serviceDetail.textContent = `${state.proxies.length} 个代理 · ${state.promos.stats.available || 0} 条库存`;
+}
 
-  function setAuthenticated(authenticated) {
-    dom.loginPanel.hidden = authenticated;
-    dom.dashboard.hidden = !authenticated;
-    dom.adminSession.hidden = !authenticated;
-    dom.logoutBtn.hidden = !authenticated;
-    if (!authenticated) {
-      adminToken = '';
-      dom.adminToken.value = '';
-      lastGeneratedCodes = [];
-      dom.generatedCodes.textContent = '';
-      dom.generatedPanel.hidden = true;
-      dom.proxyUrl.value = '';
-      dom.proxyBatch.value = '';
-    }
-  }
+function renderOverview() {
+  const cdkStats = state.cdks.stats || {}; const promoStats = state.promos.stats || {};
+  elements.overviewCdkActive.textContent = cdkStats.active ?? 0; elements.overviewCdkTotal.textContent = `共 ${cdkStats.total ?? 0} 个授权`;
+  elements.overviewPromoAvailable.textContent = promoStats.available ?? 0; elements.overviewPromoTotal.textContent = `总库存 ${promoStats.total ?? 0}`;
+  elements.overviewPromoAssigned.textContent = promoStats.assigned ?? 0; elements.overviewProxyReady.textContent = state.proxies.length; elements.overviewProxyTotal.textContent = `共 ${state.config?.countries?.length || 0} 个国家`;
+  elements.navCdkCount.textContent = cdkStats.total ?? 0; elements.navPromoCount.textContent = promoStats.available ?? 0; elements.navProxyCount.textContent = state.proxies.length;
+  elements.inventoryList.replaceChildren();
+  const groups = new Map();
+  state.promos.records.filter((record) => record.state === 'available').forEach((record) => groups.set(record.country, (groups.get(record.country) || 0) + 1));
+  if (!groups.size) elements.inventoryList.append(node('div', 'inventory-empty', '当前没有可用优惠码，请尽快导入。'));
+  [...groups.entries()].sort().forEach(([code, count]) => {
+    const country = countryByCode(code); const item = node('div', 'inventory-item');
+    item.append(node('span', '', country?.flag || '🌐'));
+    const copy = node('span'); copy.append(node('b', '', `${country?.name || code} · ${code}`), node('small', '', '可分配优惠码')); item.append(copy, node('strong', '', String(count))); elements.inventoryList.append(item);
+  });
+  updateInventoryHint();
+}
 
-  function formatDate(value) {
-    if (!value) return '长期有效';
-    var date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '-';
-    return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
-  }
+function stateBadge(value) { return node('span', `state-badge state-${value}`, STATE_LABELS[value] || value); }
+function emptyRow(body, columns, text) { body.replaceChildren(); const row = node('tr'); const cell = node('td', 'table-empty', text); cell.colSpan = columns; row.append(cell); body.append(row); }
+function tableCell(content, className = '') { const cell = node('td', className); if (content instanceof Node) cell.append(content); else cell.textContent = String(content ?? ''); return cell; }
 
-  function stateMeta(state) {
-    var values = {
-      active: { label: '有效', cls: 'is-active' },
-      exhausted: { label: '已耗尽', cls: 'is-exhausted' },
-      expired: { label: '已过期', cls: 'is-expired' },
-      revoked: { label: '已吊销', cls: 'is-revoked' }
-    };
-    return values[state] || { label: state, cls: '' };
-  }
+function renderCdks() {
+  elements.cdkTableBody.replaceChildren();
+  let records = state.cdks.records || [];
+  if (state.cdkFilter === 'active') records = records.filter((record) => record.state === 'active');
+  if (state.cdkFilter === 'inactive') records = records.filter((record) => record.state !== 'active');
+  if (!records.length) { emptyRow(elements.cdkTableBody, 7, '暂无符合条件的 CDK'); return; }
+  records.forEach((record) => {
+    const row = node('tr'); const code = node('code', '', record.maskedCode); const progress = node('div', 'progress'); const bar = node('span');
+    const fill = node('i'); fill.style.width = `${Math.min(100, Math.round((record.useCount / Math.max(1, record.maxUses)) * 100))}%`; bar.append(fill); progress.append(bar, node('small', '', `${record.useCount}/${record.maxUses}`));
+    const action = node('button', 'table-action', record.state === 'revoked' ? '已停用' : '停用'); action.type = 'button'; action.disabled = record.state === 'revoked'; action.addEventListener('click', () => revokeCdk(record));
+    row.append(tableCell(code), tableCell(record.label || '—'), tableCell(record.promoCode || '—'), tableCell(progress), tableCell(formatDate(record.expiresAt)), tableCell(stateBadge(record.state)), tableCell(action)); elements.cdkTableBody.append(row);
+  });
+}
 
-  function renderStats(stats) {
-    dom.statTotal.textContent = stats.total || 0;
-    dom.statActive.textContent = stats.active || 0;
-    dom.statExhausted.textContent = stats.exhausted || 0;
-    dom.statInactive.textContent = (stats.expired || 0) + (stats.revoked || 0);
-  }
+function updateInventoryHint() {
+  const country = elements.cdkPromoCountry.value || 'GB'; const available = state.promos.records.filter((record) => record.country === country && record.state === 'available').length;
+  elements.cdkInventoryHint.textContent = `当前可用 ${available} 条`; elements.cdkInventoryHint.style.color = available ? '' : '#bc3d3d';
+}
 
-  function revokeRecord(record, button) {
-    if (!window.confirm('确认吊销 ' + record.maskedCode + '？吊销后立即无法使用。')) return;
-    button.disabled = true;
-    button.textContent = '处理中…';
-    api('/api/admin/cdks/' + record.id, { method: 'DELETE' })
-      .then(loadRecords)
-      .catch(function (error) {
-        button.disabled = false;
-        button.textContent = '吊销';
-        window.alert(friendlyError(error));
-      });
-  }
+function deliveryText(bundle) { return `自助提链：${location.origin}/\nCDK：${bundle.code}\n优惠码：${bundle.promoCode}`; }
+async function copyText(text, button) {
+  try { await navigator.clipboard.writeText(text); if (button) { const before = button.textContent; button.textContent = '已复制'; setTimeout(() => { button.textContent = before; }, 1300); } }
+  catch { const area = node('textarea'); area.value = text; document.body.append(area); area.select(); document.execCommand('copy'); area.remove(); }
+}
+function renderIssued() {
+  elements.issuedBundles.replaceChildren(); elements.issuedEmpty.hidden = state.issued.length > 0; elements.copyAllBundles.hidden = state.issued.length === 0;
+  state.issued.forEach((bundle) => { const card = node('article', 'bundle-card'); const pre = node('pre', '', deliveryText(bundle)); const button = node('button', '', '复制'); button.type = 'button'; button.addEventListener('click', () => copyText(deliveryText(bundle), button)); card.append(pre, button); elements.issuedBundles.append(card); });
+}
 
-  function renderRecords(records) {
-    dom.tableBody.textContent = '';
-    dom.tableEmpty.hidden = records.length > 0;
-    records.forEach(function (record) {
-      var meta = stateMeta(record.state);
-      var usage = el('div', { cls: 'usage-cell' });
-      usage.appendChild(el('strong', { text: record.useCount + ' / ' + record.maxUses }));
-      var progress = el('span', { cls: 'usage-track' });
-      var fill = el('i', { cls: 'usage-fill' });
-      fill.style.width = Math.min(100, Math.round(record.useCount / record.maxUses * 100)) + '%';
-      progress.appendChild(fill);
-      usage.appendChild(progress);
+function renderPromos() {
+  const stats = state.promos.stats || {}; elements.promoTotal.textContent = stats.total ?? 0; elements.promoAvailable.textContent = stats.available ?? 0; elements.promoAssigned.textContent = stats.assigned ?? 0;
+  let records = state.promos.records || []; if (state.promoFilter !== 'all') records = records.filter((record) => record.state === state.promoFilter);
+  elements.promoTableBody.replaceChildren(); if (!records.length) { emptyRow(elements.promoTableBody, 7, '暂无符合条件的优惠码'); return; }
+  records.forEach((record) => { const row = node('tr'); const code = node('code', '', record.maskedCode); const country = countryByCode(record.country); const action = node('button', 'table-action', record.state === 'assigned' ? '已占用' : '删除'); action.type = 'button'; action.disabled = record.state === 'assigned'; action.addEventListener('click', () => deletePromo(record));
+    row.append(tableCell(code), tableCell(`${country?.flag || ''} ${country?.name || record.country}`), tableCell(record.batchName || '—'), tableCell(formatDate(record.importedAt, '—')), tableCell(record.assignedCdk || '—'), tableCell(stateBadge(record.state)), tableCell(action)); elements.promoTableBody.append(row); });
+}
 
-      var action = el('td');
-      if (record.state === 'active') {
-        var revokeButton = el('button', { cls: 'revoke-btn', text: '吊销', attrs: { type: 'button' } });
-        revokeButton.addEventListener('click', function () { revokeRecord(record, revokeButton); });
-        action.appendChild(revokeButton);
-      } else {
-        action.appendChild(el('span', { cls: 'no-action', text: '—' }));
-      }
+function renderProxies() {
+  elements.proxyGrid.replaceChildren();
+  (state.config?.countries || []).forEach((country) => {
+    const record = state.proxies.find((proxy) => proxy.country === country.code); const card = node('article', 'proxy-card' + (record ? '' : ' proxy-unconfigured')); const head = node('div', 'proxy-card-head'); const countryBlock = node('div', 'proxy-country'); countryBlock.append(node('span', '', country.flag)); const copy = node('div'); copy.append(node('b', '', `${country.name} · ${country.code}`), node('small', '', country.currency)); countryBlock.append(copy); head.append(countryBlock, stateBadge(record?.testStatus || 'untested'));
+    card.append(head, node('div', 'proxy-url', record?.displayUrl || '尚未导入代理'));
+    const meta = node('div', 'proxy-meta'); meta.append(node('span', '', record?.exitIp ? `出口 ${record.exitIp}` : '无出口记录'), node('span', '', record?.latencyMs != null ? `${record.latencyMs} ms` : '—')); card.append(meta);
+    const actions = node('div', 'proxy-actions'); const test = node('button', '', record ? '测试代理' : '前往导入'); test.type = 'button'; test.addEventListener('click', () => record ? testProxy(country.code, test) : focusProxyCountry(country.code)); const remove = node('button', '', '×'); remove.type = 'button'; remove.disabled = !record; remove.title = '删除代理'; if (record) remove.addEventListener('click', () => deleteProxy(country.code)); actions.append(test, remove); card.append(actions); elements.proxyGrid.append(card);
+  });
+}
 
-      dom.tableBody.appendChild(el('tr', { children: [
-        el('td', { children: [el('code', { cls: 'masked-code', text: record.maskedCode })] }),
-        el('td', { text: record.label || '—' }),
-        el('td', { children: [usage] }),
-        el('td', { children: [
-          el('span', { text: formatDate(record.expiresAt) }),
-          record.lastUsedAt ? el('small', { cls: 'last-used', text: '最近使用 ' + formatDate(record.lastUsedAt) }) : el('span')
-        ] }),
-        el('td', { children: [el('span', { cls: 'record-state ' + meta.cls, text: meta.label })] }),
-        action
-      ] }));
-    });
-  }
+function navigate(view) {
+  if (!VIEW_META[view]) return; $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.view === view));
+  $$('[data-view-panel]').forEach((panel) => { const active = panel.dataset.viewPanel === view; panel.hidden = !active; panel.classList.toggle('active', active); });
+  [elements.pageEyebrow.textContent, elements.pageTitle.textContent] = VIEW_META[view]; closeSidebar(); window.scrollTo({ top: 0, behavior: 'auto' });
+}
+function openSidebar() { elements.sidebar.classList.add('open'); elements.backdrop.hidden = false; }
+function closeSidebar() { elements.sidebar.classList.remove('open'); elements.backdrop.hidden = true; }
+function logout() { state.token = ''; elements.adminToken.value = ''; elements.app.hidden = true; elements.loginView.hidden = false; closeSidebar(); setStatus(elements.globalStatus); setTimeout(() => elements.adminToken.focus(), 50); }
 
-  function loadRecords() {
-    return api('/api/admin/cdks?limit=500', { method: 'GET' })
-      .then(function (data) {
-        renderStats(data.stats || {});
-        renderRecords(data.records || []);
-      });
-  }
+elements.loginForm.addEventListener('submit', async (event) => { event.preventDefault(); const token = elements.adminToken.value; if (!token) { setStatus(elements.loginStatus, '请输入管理员密码。', 'error'); return; } state.token = token; setButtonLoading(elements.loginButton, true, '正在登录…', '进入管理后台'); setStatus(elements.loginStatus, '正在校验并加载管理数据…', 'info'); try { await loadAllData(); elements.adminToken.value = ''; elements.loginView.hidden = true; elements.app.hidden = false; setStatus(elements.loginStatus); navigate('overview'); } catch (error) { state.token = ''; setStatus(elements.loginStatus, error.message, 'error'); } finally { setButtonLoading(elements.loginButton, false, '正在登录…', '进入管理后台'); } });
+elements.logoutButton.addEventListener('click', logout); elements.menuButton.addEventListener('click', openSidebar); elements.backdrop.addEventListener('click', closeSidebar);
+$$('.nav-item').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view))); $$('[data-open-view]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.openView)));
+elements.refreshButton.addEventListener('click', async () => { setButtonLoading(elements.refreshButton, true, '刷新中…', '刷新数据'); setStatus(elements.globalStatus, '正在刷新全部数据…', 'info'); try { await loadAllData(); setStatus(elements.globalStatus, '数据已刷新。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } finally { setButtonLoading(elements.refreshButton, false, '刷新中…', '刷新数据'); } });
 
-  function testStatusMeta(record) {
-    if (!record || record.testStatus === 'untested') return { label: '未测试', cls: 'is-untested' };
-    if (record.testStatus === 'healthy') return { label: '连接正常', cls: 'is-healthy' };
-    return { label: '测试失败', cls: 'is-failed' };
-  }
+elements.cdkPromoCountry.addEventListener('change', updateInventoryHint);
+elements.cdkForm.addEventListener('submit', async (event) => { event.preventDefault(); setButtonLoading(elements.cdkCreateButton, true, '正在生成…', '生成并分配优惠码'); setStatus(elements.cdkCreateStatus, '正在原子分配优惠码并生成 CDK…', 'info'); try { const result = await adminFetch('/api/admin/cdks', { method: 'POST', body: JSON.stringify({ label: elements.cdkLabel.value.trim(), count: Number(elements.cdkCount.value), maxUses: Number(elements.cdkMaxUses.value), expiresDays: Number(elements.cdkExpiry.value), promoCountry: elements.cdkPromoCountry.value }) }); state.issued = result.codes || []; renderIssued(); setStatus(elements.cdkCreateStatus, `已生成 ${state.issued.length} 个 CDK，并完成优惠码分配。`, 'success'); await loadAllData(); } catch (error) { const data = error.data; const suffix = data?.error === 'promo_inventory_insufficient' ? `（需要 ${data.required}，当前 ${data.available}）` : ''; setStatus(elements.cdkCreateStatus, error.message + suffix, 'error'); } finally { setButtonLoading(elements.cdkCreateButton, false, '正在生成…', '生成并分配优惠码'); } });
+elements.copyAllBundles.addEventListener('click', () => copyText(state.issued.map(deliveryText).join('\n\n'), elements.copyAllBundles));
+$$('[data-cdk-filter]').forEach((button) => button.addEventListener('click', () => { state.cdkFilter = button.dataset.cdkFilter; $$('[data-cdk-filter]').forEach((item) => item.classList.toggle('active', item === button)); renderCdks(); }));
+async function revokeCdk(record) { if (!confirm(`确定停用 ${record.maskedCode} 吗？此操作不会回收已分配的优惠码。`)) return; try { await adminFetch(`/api/admin/cdks/${record.id}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, 'CDK 已停用。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 
-  function testProxy(country, button) {
-    button.disabled = true;
-    button.textContent = '测试中…';
-    api('/api/admin/proxies/' + country.code + '/test', { method: 'POST' })
-      .then(function (data) {
-        setMessage(dom.proxyMessage, country.name + '代理可用，出口 IP ' + data.exitIp + '，延迟 ' + data.latencyMs + 'ms。', 'success');
-      })
-      .catch(function (error) {
-        setMessage(dom.proxyMessage, country.name + '：' + friendlyError(error), 'error');
-      })
-      .finally(function () {
-        button.disabled = false;
-        button.textContent = '测试连接';
-        return loadProxyRoutes().catch(function (error) {
-          setMessage(dom.proxyMessage, friendlyError(error), 'error');
-        });
-      });
-  }
+function splitTextCodes(text) { return String(text || '').split(/[\r\n,;\t]+/).map((value) => value.trim()).filter(Boolean); }
+async function codesFromFile(file) {
+  const extension = file.name.split('.').pop().toLowerCase();
+  if (['txt', 'csv'].includes(extension)) return splitTextCodes(await file.text());
+  if (!window.XLSX) throw new Error('Excel 解析组件加载失败，请检查网络后重试，或另存为 CSV。');
+  const workbook = window.XLSX.read(await file.arrayBuffer(), { type: 'array', cellFormula: false, cellHTML: false }); const values = [];
+  workbook.SheetNames.forEach((name) => { const rows = window.XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, raw: false, defval: '' }); rows.forEach((row) => row.forEach((cell) => { const value = String(cell ?? '').trim(); if (value) values.push(value); })); }); return values;
+}
+elements.promoFile.addEventListener('change', async () => { const file = elements.promoFile.files?.[0]; state.fileCodes = []; if (!file) return; elements.promoFileLabel.textContent = `正在读取 ${file.name}…`; try { state.fileCodes = await codesFromFile(file); elements.promoFileLabel.textContent = `${file.name} · 识别到 ${state.fileCodes.length} 个非空单元格`; elements.clearPromoFile.hidden = false; setStatus(elements.promoImportStatus, '文件读取完成，点击“导入优惠码”写入库存。', 'success'); } catch (error) { elements.promoFile.value = ''; elements.promoFileLabel.textContent = '将读取所有非空单元格'; setStatus(elements.promoImportStatus, error.message, 'error'); } });
+elements.clearPromoFile.addEventListener('click', () => { elements.promoFile.value = ''; state.fileCodes = []; elements.clearPromoFile.hidden = true; elements.promoFileLabel.textContent = '将读取所有非空单元格'; });
+elements.promoForm.addEventListener('submit', async (event) => { event.preventDefault(); const codes = [...splitTextCodes(elements.promoText.value), ...state.fileCodes]; if (!codes.length) { setStatus(elements.promoImportStatus, '请粘贴优惠码或选择文件。', 'error'); return; } setButtonLoading(elements.promoImportButton, true, '正在导入…', '导入优惠码'); setStatus(elements.promoImportStatus, `正在校验并加密 ${codes.length} 条数据…`, 'info'); try { const result = await adminFetch('/api/admin/promos', { method: 'POST', body: JSON.stringify({ country: elements.promoCountry.value, batchName: elements.promoBatch.value.trim(), codes }) }); setStatus(elements.promoImportStatus, `导入完成：新增 ${result.importedCount}，重复 ${result.duplicateCount}，无效 ${result.invalidCount}。`, 'success'); elements.promoText.value = ''; elements.clearPromoFile.click(); await loadAllData(); } catch (error) { setStatus(elements.promoImportStatus, error.message, 'error'); } finally { setButtonLoading(elements.promoImportButton, false, '正在导入…', '导入优惠码'); } });
+$$('[data-promo-filter]').forEach((button) => button.addEventListener('click', () => { state.promoFilter = button.dataset.promoFilter; $$('[data-promo-filter]').forEach((item) => item.classList.toggle('active', item === button)); renderPromos(); }));
+async function deletePromo(record) { if (!confirm(`确定删除未分配优惠码 ${record.maskedCode} 吗？`)) return; try { await adminFetch(`/api/admin/promos/${record.id}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, '优惠码已从可用库存删除。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 
-  function deleteProxy(country, record, button) {
-    if (!window.confirm('确认删除 ' + country.name + ' 的代理 ' + record.displayUrl + '？')) return;
-    button.disabled = true;
-    api('/api/admin/proxies/' + country.code, { method: 'DELETE' })
-      .then(function () {
-        setMessage(dom.proxyMessage, country.name + '代理已删除。', 'success');
-        return loadProxyRoutes();
-      })
-      .catch(function (error) {
-        button.disabled = false;
-        setMessage(dom.proxyMessage, friendlyError(error), 'error');
-      });
-  }
+function parseProxyBatch(value) { const text = String(value || '').trim(); if (!text) throw new Error('请粘贴代理配置。'); if (text.startsWith('{')) { const parsed = JSON.parse(text); if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('JSON 必须是国家到代理 URL 的对象。'); return parsed; } const routes = {}; text.split(/\r?\n/).forEach((line) => { const trimmed = line.trim(); if (!trimmed) return; const index = trimmed.indexOf('='); if (index < 2) throw new Error(`无法解析：${trimmed}`); routes[trimmed.slice(0, index).trim().toUpperCase()] = trimmed.slice(index + 1).trim(); }); return routes; }
+elements.proxySingleForm.addEventListener('submit', async (event) => { event.preventDefault(); if (!elements.proxyUrl.value.trim()) { setStatus(elements.proxySingleStatus, '请输入代理 URL。', 'error'); return; } setButtonLoading(elements.proxySaveButton, true, '正在保存…', '保存并加密'); try { await adminFetch('/api/admin/proxies', { method: 'POST', body: JSON.stringify({ country: elements.proxyCountry.value, proxyUrl: elements.proxyUrl.value.trim() }) }); elements.proxyUrl.value = ''; setStatus(elements.proxySingleStatus, '代理已加密保存。', 'success'); await loadAllData(); } catch (error) { setStatus(elements.proxySingleStatus, error.message, 'error'); } finally { setButtonLoading(elements.proxySaveButton, false, '正在保存…', '保存并加密'); } });
+elements.proxyBatchForm.addEventListener('submit', async (event) => { event.preventDefault(); setButtonLoading(elements.proxyBatchButton, true, '正在保存…', '批量保存'); try { const routes = parseProxyBatch(elements.proxyBatch.value); const result = await adminFetch('/api/admin/proxies', { method: 'POST', body: JSON.stringify({ routes }) }); elements.proxyBatch.value = ''; setStatus(elements.proxyBatchStatus, `已保存 ${result.savedCountries.length} 个国家代理。`, 'success'); await loadAllData(); } catch (error) { setStatus(elements.proxyBatchStatus, error.message, 'error'); } finally { setButtonLoading(elements.proxyBatchButton, false, '正在保存…', '批量保存'); } });
+function focusProxyCountry(code) { elements.proxyCountry.value = code; elements.proxyUrl.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+async function testProxy(code, button) { setButtonLoading(button, true, '测试中…', '测试代理'); try { const result = await adminFetch(`/api/admin/proxies/${code}/test`, { method: 'POST' }); setStatus(elements.globalStatus, `${code} 代理正常：出口 ${result.exitIp}，延迟 ${result.latencyMs} ms。`, 'success'); await loadAllData(); } catch (error) { setStatus(elements.globalStatus, `${code}：${error.message}`, 'error'); await loadAllData().catch(() => {}); } finally { if (document.body.contains(button)) setButtonLoading(button, false, '测试中…', '测试代理'); } }
+async function deleteProxy(code) { if (!confirm(`确定删除 ${code} 国家代理吗？删除后该国家无法提链。`)) return; try { await adminFetch(`/api/admin/proxies/${code}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, `${code} 代理已删除。`, 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 
-  function renderProxyRoutes(records) {
-    var byCountry = {};
-    records.forEach(function (record) { byCountry[record.country] = record; });
-    dom.proxyCount.textContent = records.length + ' / ' + countries.length + ' 已配置';
-    dom.proxyRouteGrid.textContent = '';
-
-    countries.forEach(function (country) {
-      var record = byCountry[country.code];
-      var status = testStatusMeta(record);
-      var card = el('article', { cls: 'proxy-route-card ' + (record ? 'is-configured' : 'is-empty') });
-      var heading = el('div', { cls: 'proxy-route-heading', children: [
-        el('span', { cls: 'proxy-flag', text: country.flag }),
-        el('div', { children: [el('strong', { text: country.name }), el('small', { text: country.code })] }),
-        el('span', { cls: 'proxy-test-state ' + status.cls, text: record ? status.label : '未配置' })
-      ] });
-      card.appendChild(heading);
-
-      if (record) {
-        card.appendChild(el('code', { cls: 'proxy-display-url', text: record.displayUrl }));
-        var testDetail = record.lastTestedAt
-          ? (record.exitIp ? '出口 ' + record.exitIp + ' · ' : '') +
-            (record.latencyMs == null ? '' : record.latencyMs + 'ms · ') + formatDate(record.lastTestedAt)
-          : '保存于 ' + formatDate(record.updatedAt) + '，等待连通性测试';
-        card.appendChild(el('p', { cls: 'proxy-route-meta', text: testDetail }));
-        var testButton = el('button', { cls: 'proxy-test-btn', text: '测试连接', attrs: { type: 'button' } });
-        var deleteButton = el('button', { cls: 'proxy-delete-btn', text: '删除', attrs: { type: 'button' } });
-        testButton.addEventListener('click', function (event) {
-          event.stopPropagation();
-          testProxy(country, testButton);
-        });
-        deleteButton.addEventListener('click', function (event) {
-          event.stopPropagation();
-          deleteProxy(country, record, deleteButton);
-        });
-        card.appendChild(el('div', { cls: 'proxy-route-actions', children: [testButton, deleteButton] }));
-      } else {
-        card.appendChild(el('p', { cls: 'proxy-empty-copy', text: '点击卡片，在上方导入这个国家的代理。' }));
-      }
-      card.addEventListener('click', function () {
-        dom.proxyCountry.value = country.code;
-        dom.proxyUrl.focus();
-      });
-      dom.proxyRouteGrid.appendChild(card);
-    });
-  }
-
-  function loadProxyRoutes() {
-    return api('/api/admin/proxies', { method: 'GET' }).then(function (data) {
-      renderProxyRoutes(data.records || []);
-    });
-  }
-
-  function loadDashboard() {
-    dom.refreshBtn.disabled = true;
-    dom.refreshBtn.textContent = '正在刷新…';
-    return loadRecords()
-      .then(function () {
-        return loadProxyRoutes().catch(function (error) {
-          renderProxyRoutes([]);
-          setMessage(dom.proxyMessage, friendlyError(error), 'error');
-        });
-      })
-      .finally(function () {
-        dom.refreshBtn.disabled = false;
-        dom.refreshBtn.textContent = '↻ 刷新数据';
-      });
-  }
-
-  function onLogin(event) {
-    event.preventDefault();
-    var token = dom.adminToken.value.trim();
-    if (!token) {
-      setMessage(dom.loginMessage, '请输入管理 Token', 'error');
-      return;
-    }
-    adminToken = token;
-    dom.loginBtn.disabled = true;
-    dom.loginBtn.textContent = '正在验证…';
-    setMessage(dom.loginMessage, '');
-    loadDashboard()
-      .then(function () {
-        setAuthenticated(true);
-      })
-      .catch(function (error) {
-        adminToken = '';
-        setMessage(dom.loginMessage, friendlyError(error), 'error');
-      })
-      .finally(function () {
-        dom.loginBtn.disabled = false;
-        dom.loginBtn.textContent = '进入控制台';
-      });
-  }
-
-  function copyText(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
-    window.prompt('请手动复制：', text);
-    return Promise.resolve();
-  }
-
-  function renderGenerated(codes) {
-    lastGeneratedCodes = codes.map(function (item) { return item.code; });
-    dom.generatedCodes.textContent = '';
-    codes.forEach(function (item) {
-      var copyButton = el('button', { cls: 'copy-code-btn', text: '复制', attrs: { type: 'button' } });
-      copyButton.addEventListener('click', function () {
-        copyText(item.code).then(function () {
-          copyButton.textContent = '已复制';
-          setTimeout(function () { copyButton.textContent = '复制'; }, 1200);
-        });
-      });
-      dom.generatedCodes.appendChild(el('div', { cls: 'generated-code-row', children: [
-        el('code', { text: item.code }),
-        copyButton
-      ] }));
-    });
-    dom.generatedPanel.hidden = false;
-  }
-
-  function onGenerate(event) {
-    event.preventDefault();
-    var payload = {
-      label: dom.cdkLabel.value.trim(),
-      count: Number(dom.cdkCount.value),
-      maxUses: Number(dom.cdkMaxUses.value),
-      expiresDays: Number(dom.cdkExpiry.value)
-    };
-    dom.generateBtn.disabled = true;
-    dom.generateBtn.textContent = '正在签发…';
-    setMessage(dom.generateMessage, '');
-    api('/api/admin/cdks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
-      .then(function (data) {
-        renderGenerated(data.codes || []);
-        setMessage(dom.generateMessage, '已生成 ' + data.codes.length + ' 个 CDK，请立即保存明文。', 'success');
-        return loadRecords();
-      })
-      .catch(function (error) {
-        setMessage(dom.generateMessage, friendlyError(error), 'error');
-      })
-      .finally(function () {
-        dom.generateBtn.disabled = false;
-        dom.generateBtn.textContent = '生成 CDK';
-      });
-  }
-
-  function onSaveProxy(event) {
-    event.preventDefault();
-    var country = dom.proxyCountry.value;
-    var proxyUrl = dom.proxyUrl.value.trim();
-    dom.saveProxyBtn.disabled = true;
-    dom.saveProxyBtn.textContent = '保存中…';
-    setMessage(dom.proxyMessage, '');
-    api('/api/admin/proxies', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ country: country, proxyUrl: proxyUrl })
-    })
-      .then(function () {
-        dom.proxyUrl.value = '';
-        setMessage(dom.proxyMessage, country + ' 代理已加密保存，明文已从输入框清除。', 'success');
-        return loadProxyRoutes();
-      })
-      .catch(function (error) { setMessage(dom.proxyMessage, friendlyError(error), 'error'); })
-      .finally(function () {
-        dom.saveProxyBtn.disabled = false;
-        dom.saveProxyBtn.textContent = '加密保存';
-      });
-  }
-
-  function parseProxyBatch(raw) {
-    var text = raw.trim();
-    if (!text) throw new Error('invalid_proxy_import');
-    var routes = {};
-    if (text.charAt(0) === '{') {
-      var parsed;
-      try { parsed = JSON.parse(text); } catch (error) { throw new Error('invalid_proxy_import'); }
-      var source = parsed && parsed.routes ? parsed.routes : parsed;
-      if (!source || typeof source !== 'object' || Array.isArray(source)) throw new Error('invalid_proxy_import');
-      Object.keys(source).forEach(function (country) {
-        routes[country.toUpperCase()] = source[country];
-      });
-    } else {
-      text.split(/\r?\n/).forEach(function (line) {
-        var trimmed = line.trim();
-        if (!trimmed || trimmed.charAt(0) === '#') return;
-        var separator = trimmed.indexOf('=');
-        if (separator < 1) throw new Error('invalid_proxy_import');
-        routes[trimmed.slice(0, separator).trim().toUpperCase()] = trimmed.slice(separator + 1).trim();
-      });
-    }
-    var allowed = countries.map(function (country) { return country.code; });
-    var keys = Object.keys(routes);
-    if (!keys.length || keys.some(function (country) {
-      return allowed.indexOf(country) < 0 || typeof routes[country] !== 'string' || !routes[country].trim();
-    })) throw new Error('invalid_proxy_import');
-    return routes;
-  }
-
-  function onBatchProxy(event) {
-    event.preventDefault();
-    var routes;
-    try {
-      routes = parseProxyBatch(dom.proxyBatch.value);
-    } catch (error) {
-      setMessage(dom.proxyBatchMessage, friendlyError(error), 'error');
-      return;
-    }
-    dom.batchProxyBtn.disabled = true;
-    dom.batchProxyBtn.textContent = '导入中…';
-    setMessage(dom.proxyBatchMessage, '');
-    api('/api/admin/proxies', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ routes: routes })
-    })
-      .then(function (data) {
-        dom.proxyBatch.value = '';
-        setMessage(dom.proxyBatchMessage, '已加密导入 ' + data.savedCountries.length + ' 个国家，明文已清除。', 'success');
-        return loadProxyRoutes();
-      })
-      .catch(function (error) { setMessage(dom.proxyBatchMessage, friendlyError(error), 'error'); })
-      .finally(function () {
-        dom.batchProxyBtn.disabled = false;
-        dom.batchProxyBtn.textContent = '批量加密导入';
-      });
-  }
-
-  function bind() {
-    dom.loginForm.addEventListener('submit', onLogin);
-    dom.generateForm.addEventListener('submit', onGenerate);
-    dom.proxyForm.addEventListener('submit', onSaveProxy);
-    dom.proxyBatchForm.addEventListener('submit', onBatchProxy);
-    dom.refreshBtn.addEventListener('click', function () {
-      loadDashboard().catch(function (error) { window.alert(friendlyError(error)); });
-    });
-    dom.logoutBtn.addEventListener('click', function () { setAuthenticated(false); });
-    dom.copyAllBtn.addEventListener('click', function () {
-      copyText(lastGeneratedCodes.join('\n')).then(function () {
-        dom.copyAllBtn.textContent = '已复制';
-        setTimeout(function () { dom.copyAllBtn.textContent = '复制全部'; }, 1200);
-      });
-    });
-  }
-
-  function init() {
-    dom = {
-      loginPanel: $('login-panel'), dashboard: $('admin-dashboard'), adminSession: $('admin-session'),
-      logoutBtn: $('logout-btn'), loginForm: $('login-form'), adminToken: $('admin-token'),
-      loginBtn: $('login-btn'), loginMessage: $('login-message'), refreshBtn: $('refresh-btn'),
-      statTotal: $('stat-total'), statActive: $('stat-active'), statExhausted: $('stat-exhausted'),
-      statInactive: $('stat-inactive'), generateForm: $('generate-form'), cdkLabel: $('cdk-label'),
-      cdkCount: $('cdk-count'), cdkMaxUses: $('cdk-max-uses'), cdkExpiry: $('cdk-expiry'),
-      generateBtn: $('generate-cdk-btn'), generateMessage: $('generate-message'),
-      generatedPanel: $('generated-panel'), generatedCodes: $('generated-codes'), copyAllBtn: $('copy-all-btn'),
-      tableBody: $('cdk-table-body'), tableEmpty: $('table-empty'), proxyCount: $('proxy-count'),
-      proxyForm: $('proxy-form'), proxyCountry: $('proxy-country'), proxyUrl: $('proxy-url'),
-      saveProxyBtn: $('save-proxy-btn'), proxyMessage: $('proxy-message'),
-      proxyBatchForm: $('proxy-batch-form'), proxyBatch: $('proxy-batch'),
-      batchProxyBtn: $('batch-proxy-btn'), proxyBatchMessage: $('proxy-batch-message'),
-      proxyRouteGrid: $('proxy-route-grid')
-    };
-    bind();
-    setAuthenticated(false);
-  }
-
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
-})();
+renderIssued(); elements.adminToken.focus();

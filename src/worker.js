@@ -6,6 +6,7 @@ import {
   recordProxyTest,
   saveProxyRoutes,
 } from './proxy-config.js';
+import { deletePromoCode, importPromoCodes, listPromoCodes } from './promo-codes.js';
 
 // ChatGPT Team 支付长链生成器 - Cloudflare Worker
 // 前端静态资源 + 国家配置 + 按国家转发 checkout 请求。
@@ -141,6 +142,25 @@ async function safeCdkOperation(operation) {
   } catch {
     return { ok: false, error: 'cdk_database_error' };
   }
+}
+
+async function safePromoOperation(operation) {
+  try {
+    return await operation();
+  } catch {
+    return { ok: false, error: 'promo_database_error' };
+  }
+}
+
+function promoFailureStatus(error) {
+  if (['promo_service_not_configured', 'promo_database_error'].includes(error)) return 503;
+  if (error === 'promo_inventory_insufficient') return 409;
+  if (error === 'promo_not_found_or_assigned') return 404;
+  return 400;
+}
+
+function promoFailureResponse(result, env) {
+  return jsonResponse(result, promoFailureStatus(result.error), { 'Cache-Control': 'no-store' }, env);
 }
 
 function decodeJwtPayload(token) {
@@ -344,6 +364,7 @@ async function configurationResponse(env) {
       configValid: !legacyProxyConfig.parseError && !commonRelay.parseError && !dynamic.error,
       cdkRequired: true,
       cdkServiceReady: Boolean(env.DB && env.CDK_HASH_PEPPER),
+      promoServiceReady: Boolean(env.DB && env.PROMO_ENCRYPTION_KEY),
       proxyAdminReady: Boolean(
         env.DB && env.PROXY_ENCRYPTION_KEY && (commonRelay.route || legacyProxyConfig.routes.size)
       ),
@@ -420,13 +441,59 @@ async function handleAdminCdks(request, env) {
     }
     const result = await safeCdkOperation(() => createCdks(body, env));
     if (!result.ok) {
-      const status = ['cdk_service_not_configured', 'cdk_database_error'].includes(result.error) ? 503 : 400;
+      const status = result.error.startsWith('promo_')
+        ? promoFailureStatus(result.error)
+        : (['cdk_service_not_configured', 'cdk_database_error'].includes(result.error) ? 503 : 400);
       return jsonResponse(result, status, {}, env);
     }
     return jsonResponse(result, 201, { 'Cache-Control': 'no-store' }, env);
   }
 
   return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
+}
+
+async function handleAdminPromos(request, env) {
+  const authorization = adminAuthorization(request, env);
+  if (!authorization.ok) {
+    return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
+  }
+
+  if (request.method === 'GET') {
+    const url = new URL(request.url);
+    const result = await safePromoOperation(() => listPromoCodes(env, {
+      limit: url.searchParams.get('limit') || 500,
+      country: url.searchParams.get('country') || '',
+    }));
+    if (!result.ok) return promoFailureResponse(result, env);
+    return jsonResponse(result, 200, { 'Cache-Control': 'no-store' }, env);
+  }
+
+  if (request.method === 'POST') {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
+    }
+    const result = await safePromoOperation(() => importPromoCodes(body, env));
+    if (!result.ok) return promoFailureResponse(result, env);
+    return jsonResponse(result, 201, { 'Cache-Control': 'no-store' }, env);
+  }
+
+  return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
+}
+
+async function handleAdminPromoItem(request, env, id) {
+  const authorization = adminAuthorization(request, env);
+  if (!authorization.ok) {
+    return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
+  }
+  if (request.method !== 'DELETE') {
+    return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
+  }
+  const result = await safePromoOperation(() => deletePromoCode(id, env));
+  if (!result.ok) return promoFailureResponse(result, env);
+  return jsonResponse(result, 200, { 'Cache-Control': 'no-store' }, env);
 }
 
 async function handleAdminCdkItem(request, env, id) {
@@ -910,6 +977,7 @@ export default {
           configuredProxyCount: new Set([...proxyConfig.routes.keys(), ...dynamic.countries]).size,
           configValid: !proxyConfig.parseError && !commonRelay.parseError && !dynamic.error,
           cdkServiceReady: Boolean(env.DB && env.CDK_HASH_PEPPER),
+          promoServiceReady: Boolean(env.DB && env.PROMO_ENCRYPTION_KEY),
           proxyAdminReady: Boolean(
             env.DB && env.PROXY_ENCRYPTION_KEY && (commonRelay.route || proxyConfig.routes.size)
           ),
@@ -931,6 +999,11 @@ export default {
     }
     const adminCdkMatch = /^\/api\/admin\/cdks\/(\d+)$/.exec(url.pathname);
     if (adminCdkMatch) return handleAdminCdkItem(request, env, adminCdkMatch[1]);
+    if (url.pathname === '/api/admin/promos' && ['GET', 'POST'].includes(request.method)) {
+      return handleAdminPromos(request, env);
+    }
+    const adminPromoMatch = /^\/api\/admin\/promos\/(\d+)$/.exec(url.pathname);
+    if (adminPromoMatch) return handleAdminPromoItem(request, env, adminPromoMatch[1]);
     if (url.pathname === '/api/admin/proxies' && ['GET', 'POST'].includes(request.method)) {
       return handleAdminProxies(request, env);
     }
