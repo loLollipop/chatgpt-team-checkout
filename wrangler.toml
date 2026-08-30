@@ -11,5 +11,5 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "chatgpt-team-checkout-db"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "4c0f9b30-4421-49e4-b093-c1948ebd2bcf"
 migrations_dir = "migrations"
