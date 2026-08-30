@@ -63,15 +63,33 @@
           </section>
 
           <section class="view" data-view-panel="cdks" hidden>
-            <div class="page-grid page-grid-form">
-              <section class="panel sticky-panel"><div class="panel-heading"><div><span class="eyebrow">Issue access</span><h3>生成客户 CDK</h3><p>每个 CDK 自动占用一条全球优惠码。</p></div></div><form id="cdk-create-form" class="admin-form" novalidate>
-                <label>内部备注<input id="cdk-label" type="text" maxlength="80" placeholder="例如：客户 A / 订单号" /></label>
-                <label>生成数量<input id="cdk-count" type="number" min="1" max="50" value="1" /></label>
-                <div class="fixed-rule"><span>固定规则</span><div><b>每条仅可使用 1 次</b><small>生成后 24 小时自动过期 · 当前全球库存 <strong id="cdk-inventory-hint">—</strong> 条</small></div></div>
-                <button id="cdk-create-button" class="button button-primary" type="submit">生成并分配优惠码</button><div id="cdk-create-status" class="status" role="status" aria-live="polite"></div>
-              </form><div class="admin-cdk-box"><div><span class="eyebrow">Admin access</span><h4>管理员通用 CDK</h4><p>长期有效、可重复使用，不会占用优惠码。重新生成会自动停用旧管理员 CDK。</p></div><button id="admin-cdk-create" class="button button-dark" type="button">生成管理员通用 CDK</button><div id="admin-cdk-result" class="admin-cdk-result" hidden><code id="admin-cdk-code"></code><button id="admin-cdk-copy" type="button">复制</button></div><div id="admin-cdk-status" class="status" role="status" aria-live="polite"></div></div></section>
-              <section class="panel issued-panel"><div class="panel-heading"><div><span class="eyebrow">Delivery preview</span><h3>本次生成结果</h3><p>CDK 与优惠码会加密保存，可在下方记录中随时查看和复制。</p></div><button id="copy-all-bundles" class="button button-secondary button-small" type="button" hidden>复制全部</button></div><div id="issued-empty" class="empty-state"><span>◇</span><b>还没有新生成的 CDK</b><p>在左侧填写参数并生成，结果会出现在这里。</p></div><div id="issued-bundles" class="issued-bundles"></div></section>
+            <div class="cdk-control-grid">
+              <section class="panel cdk-control-card cdk-issue-card">
+                <div class="panel-heading"><div><span class="eyebrow">Customer access</span><h3>生成客户 CDK</h3><p>填写交付信息，系统会自动分配一条全球优惠码。</p></div><span class="control-card-index">01</span></div>
+                <form id="cdk-create-form" class="admin-form" novalidate>
+                  <div class="form-row">
+                    <label>内部备注<input id="cdk-label" type="text" maxlength="80" placeholder="例如：客户 A / 订单号" /></label>
+                    <label>生成数量<input id="cdk-count" type="number" min="1" max="50" value="1" /></label>
+                  </div>
+                  <div class="fixed-rule"><span>固定规则</span><div><b>每条仅可使用 1 次</b><small>生成后 24 小时自动过期 · 当前全球库存 <strong id="cdk-inventory-hint">—</strong> 条</small></div></div>
+                  <div class="control-card-actions"><button id="cdk-create-button" class="button button-primary" type="submit">生成并分配优惠码</button><div id="cdk-create-status" class="status" role="status" aria-live="polite"></div></div>
+                </form>
+              </section>
+
+              <section class="panel cdk-control-card admin-access-card">
+                <div class="panel-heading"><div><span class="eyebrow">Admin access</span><h3>管理员通用 CDK</h3><p>长期有效、可重复使用，不占用优惠码库存。</p></div><span id="admin-cdk-state" class="admin-access-state state-loading">读取中</span></div>
+                <div class="admin-access-body">
+                  <div id="admin-cdk-result" class="admin-cdk-result" data-mode="loading">
+                    <div class="admin-code-copy"><span id="admin-cdk-caption">正在读取当前管理员 CDK</span><code id="admin-cdk-code">••••-••••-••••-••••</code></div>
+                    <button id="admin-cdk-copy" type="button" disabled>复制 CDK</button>
+                  </div>
+                  <p id="admin-cdk-hint" class="admin-cdk-hint">只有通过后台鉴权后才会解密显示，浏览器不会持久化保存。</p>
+                  <div class="admin-access-meta"><span><b>长期有效</b><small>除非手动停用或重新生成</small></span><span><b>无限次使用</b><small>不会占用全球优惠码库存</small></span></div>
+                </div>
+                <div class="control-card-actions"><button id="admin-cdk-create" class="button button-dark" type="button">生成管理员通用 CDK</button><div id="admin-cdk-status" class="status" role="status" aria-live="polite"></div></div>
+              </section>
             </div>
+            <section class="panel issued-panel"><div class="panel-heading"><div><span class="eyebrow">Delivery preview</span><h3>本次客户 CDK 交付结果</h3><p>生成后可一键复制“自助提链 / CDK / 优惠码”完整交付文本。</p></div><button id="copy-all-bundles" class="button button-secondary button-small" type="button" hidden>复制全部</button></div><div id="issued-empty" class="empty-state"><span>◇</span><b>还没有新生成的客户 CDK</b><p>完成上方客户 CDK 表单后，交付结果会显示在这里。</p></div><div id="issued-bundles" class="issued-bundles"></div></section>
             <section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">Access records</span><h3>CDK 可视化记录</h3><p>新生成的 CDK 可直接查看和复制；本次更新前的历史 CDK 因仅保存哈希，保留脱敏显示。</p></div><div class="filter-pills"><button class="active" type="button" data-cdk-filter="all">全部</button><button type="button" data-cdk-filter="active">有效</button><button type="button" data-cdk-filter="inactive">失效</button></div></div><div class="table-wrap"><table><thead><tr><th>CDK</th><th>类型</th><th>备注</th><th>优惠码</th><th>使用规则</th><th>有效期</th><th>状态</th><th></th></tr></thead><tbody id="cdk-table-body"></tbody></table></div></section>
           </section>
 

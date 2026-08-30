@@ -8,7 +8,7 @@ const elements = {
   navCdkCount: $('#nav-cdk-count'), navPromoCount: $('#nav-promo-count'), navProxyCount: $('#nav-proxy-count'),
   overviewCdkActive: $('#overview-cdk-active'), overviewCdkTotal: $('#overview-cdk-total'), overviewPromoAvailable: $('#overview-promo-available'), overviewPromoTotal: $('#overview-promo-total'), overviewProxyReady: $('#overview-proxy-ready'), overviewProxyTotal: $('#overview-proxy-total'), overviewPromoAssigned: $('#overview-promo-assigned'), inventoryList: $('#inventory-list'),
   cdkForm: $('#cdk-create-form'), cdkLabel: $('#cdk-label'), cdkCount: $('#cdk-count'), cdkInventoryHint: $('#cdk-inventory-hint'), cdkCreateButton: $('#cdk-create-button'), cdkCreateStatus: $('#cdk-create-status'), cdkTableBody: $('#cdk-table-body'),
-  adminCdkCreate: $('#admin-cdk-create'), adminCdkResult: $('#admin-cdk-result'), adminCdkCode: $('#admin-cdk-code'), adminCdkCopy: $('#admin-cdk-copy'), adminCdkStatus: $('#admin-cdk-status'),
+  adminCdkCreate: $('#admin-cdk-create'), adminCdkResult: $('#admin-cdk-result'), adminCdkCode: $('#admin-cdk-code'), adminCdkCopy: $('#admin-cdk-copy'), adminCdkStatus: $('#admin-cdk-status'), adminCdkState: $('#admin-cdk-state'), adminCdkCaption: $('#admin-cdk-caption'), adminCdkHint: $('#admin-cdk-hint'),
   issuedEmpty: $('#issued-empty'), issuedBundles: $('#issued-bundles'), copyAllBundles: $('#copy-all-bundles'),
   promoTotal: $('#promo-total'), promoAvailable: $('#promo-available'), promoAssigned: $('#promo-assigned'), promoForm: $('#promo-import-form'), promoBatch: $('#promo-batch'), promoText: $('#promo-text'), promoFile: $('#promo-file'), promoFileLabel: $('#promo-file-label'), clearPromoFile: $('#clear-promo-file'), promoImportButton: $('#promo-import-button'), promoImportStatus: $('#promo-import-status'), promoTableBody: $('#promo-table-body'), promoPageInfo: $('#promo-page-info'), promoPrevPage: $('#promo-prev-page'), promoNextPage: $('#promo-next-page'),
   proxySingleForm: $('#proxy-single-form'), proxyCountry: $('#proxy-country'), proxyUrl: $('#proxy-url'), proxySaveButton: $('#proxy-save-button'), proxySingleStatus: $('#proxy-single-status'), proxyBatchForm: $('#proxy-batch-form'), proxyBatch: $('#proxy-batch'), proxyBatchButton: $('#proxy-batch-button'), proxyBatchStatus: $('#proxy-batch-status'), proxyGrid: $('#proxy-grid'),
@@ -123,7 +123,42 @@ function visibleCode(value, legacy = false) {
   return wrap;
 }
 
+function activeAdminCdk() {
+  return (state.cdks.records || []).find((record) => record.kind === 'admin' && record.state === 'active') || null;
+}
+
+function renderCurrentAdminCdk(preferredCode = '') {
+  const record = activeAdminCdk();
+  const revealedCode = preferredCode || (record && !record.legacyCode ? record.code : '');
+  const mode = revealedCode ? 'ready' : (record ? 'legacy' : 'empty');
+  const content = {
+    ready: {
+      state: '可复制', caption: '当前有效的管理员 CDK', code: revealedCode,
+      hint: '已使用 AES-GCM 加密保存。刷新或重新登录后台后，仍可查看和复制。',
+    },
+    legacy: {
+      state: '历史脱敏', caption: '升级前生成的管理员 CDK', code: record?.maskedCode || record?.code || '••••-••••-••••-••••',
+      hint: '这条历史 CDK 只保存了不可逆哈希，技术上无法恢复原文。重新生成后，新 CDK 会在这里长期可见并支持复制。',
+    },
+    empty: {
+      state: '未生成', caption: '当前没有有效的管理员 CDK', code: '尚未生成',
+      hint: '生成后会立即显示完整 CDK，并以密文保存，之后刷新页面也能继续复制。',
+    },
+  }[mode];
+
+  elements.adminCdkResult.dataset.mode = mode;
+  elements.adminCdkState.className = `admin-access-state admin-access-${mode}`;
+  elements.adminCdkState.textContent = content.state;
+  elements.adminCdkCaption.textContent = content.caption;
+  elements.adminCdkCode.textContent = content.code;
+  elements.adminCdkHint.textContent = content.hint;
+  elements.adminCdkCopy.disabled = mode !== 'ready';
+  elements.adminCdkCopy.title = mode === 'ready' ? '复制完整管理员 CDK' : content.hint;
+  elements.adminCdkCreate.textContent = record || preferredCode ? '重新生成管理员通用 CDK' : '生成管理员通用 CDK';
+}
+
 function renderCdks() {
+  renderCurrentAdminCdk();
   elements.cdkTableBody.replaceChildren();
   let records = state.cdks.records || [];
   if (state.cdkFilter === 'active') records = records.filter((record) => record.state === 'active');
@@ -188,8 +223,30 @@ $$('.nav-item').forEach((button) => button.addEventListener('click', () => navig
 elements.refreshButton.addEventListener('click', async () => { setButtonLoading(elements.refreshButton, true, '刷新中…', '刷新数据'); setStatus(elements.globalStatus, '正在刷新全部数据…', 'info'); try { await loadAllData(); setStatus(elements.globalStatus, '数据已刷新。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } finally { setButtonLoading(elements.refreshButton, false, '刷新中…', '刷新数据'); } });
 
 elements.cdkForm.addEventListener('submit', async (event) => { event.preventDefault(); setButtonLoading(elements.cdkCreateButton, true, '正在生成…', '生成并分配优惠码'); setStatus(elements.cdkCreateStatus, '正在原子分配优惠码并生成 CDK…', 'info'); try { const result = await adminFetch('/api/admin/cdks', { method: 'POST', body: JSON.stringify({ label: elements.cdkLabel.value.trim(), count: Number(elements.cdkCount.value) }) }); state.issued = result.codes || []; renderIssued(); setStatus(elements.cdkCreateStatus, `已生成 ${state.issued.length} 个 CDK，每条可用 1 次、24 小时有效。`, 'success'); await loadAllData(); } catch (error) { const data = error.data; const suffix = data?.error === 'promo_inventory_insufficient' ? `（需要 ${data.required}，当前 ${data.available}）` : ''; setStatus(elements.cdkCreateStatus, error.message + suffix, 'error'); } finally { setButtonLoading(elements.cdkCreateButton, false, '正在生成…', '生成并分配优惠码'); } });
-elements.adminCdkCreate.addEventListener('click', async () => { setButtonLoading(elements.adminCdkCreate, true, '正在生成…', '生成管理员通用 CDK'); setStatus(elements.adminCdkStatus, '正在生成新的管理员通用 CDK…', 'info'); elements.adminCdkResult.hidden = true; try { const result = await adminFetch('/api/admin/cdks/universal', { method: 'POST', body: '{}' }); const code = result.code?.code || ''; elements.adminCdkCode.textContent = code; elements.adminCdkResult.hidden = !code; setStatus(elements.adminCdkStatus, '新管理员 CDK 已生成，旧管理员 CDK 已自动停用。', 'success'); await loadAllData(); } catch (error) { setStatus(elements.adminCdkStatus, error.message, 'error'); } finally { setButtonLoading(elements.adminCdkCreate, false, '正在生成…', '生成管理员通用 CDK'); } });
-elements.adminCdkCopy.addEventListener('click', () => copyText(elements.adminCdkCode.textContent, elements.adminCdkCopy));
+elements.adminCdkCreate.addEventListener('click', async () => {
+  const existing = activeAdminCdk();
+  if (existing && !confirm('重新生成会立即停用当前管理员 CDK。确定继续吗？')) return;
+  let generatedCode = '';
+  setButtonLoading(elements.adminCdkCreate, true, '正在生成并加密…', existing ? '重新生成管理员通用 CDK' : '生成管理员通用 CDK');
+  elements.adminCdkState.className = 'admin-access-state state-loading'; elements.adminCdkState.textContent = '生成中';
+  setStatus(elements.adminCdkStatus, '正在生成新的管理员通用 CDK…', 'info');
+  try {
+    const result = await adminFetch('/api/admin/cdks/universal', { method: 'POST', body: '{}' });
+    generatedCode = result.code?.code || '';
+    if (!generatedCode) throw new Error('管理员 CDK 已生成，但服务端没有返回可复制内容。');
+    renderCurrentAdminCdk(generatedCode);
+    setStatus(elements.adminCdkStatus, '新管理员 CDK 已生成并加密保存，旧管理员 CDK 已自动停用。', 'success');
+    try { await loadAllData(); }
+    catch { renderCurrentAdminCdk(generatedCode); setStatus(elements.adminCdkStatus, '新管理员 CDK 已生成，但列表刷新失败，请先复制当前显示的 CDK。', 'error'); }
+  } catch (error) {
+    renderCurrentAdminCdk(generatedCode);
+    setStatus(elements.adminCdkStatus, error.message, 'error');
+  } finally {
+    elements.adminCdkCreate.disabled = false;
+    renderCurrentAdminCdk(generatedCode);
+  }
+});
+elements.adminCdkCopy.addEventListener('click', () => { if (!elements.adminCdkCopy.disabled) copyText(elements.adminCdkCode.textContent, elements.adminCdkCopy); });
 elements.copyAllBundles.addEventListener('click', () => copyText(state.issued.map(deliveryText).join('\n\n'), elements.copyAllBundles));
 $$('[data-cdk-filter]').forEach((button) => button.addEventListener('click', () => { state.cdkFilter = button.dataset.cdkFilter; $$('[data-cdk-filter]').forEach((item) => item.classList.toggle('active', item === button)); renderCdks(); }));
 async function revokeCdk(record) { if (!confirm(`确定停用 ${record.code || record.maskedCode} 吗？此操作不会回收已分配的优惠码。`)) return; try { await adminFetch(`/api/admin/cdks/${record.id}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, 'CDK 已停用。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
