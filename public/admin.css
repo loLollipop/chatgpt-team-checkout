@@ -10,7 +10,7 @@
   --accent-soft: #e8f8f2;
   --danger: #bc3d3d;
   --warning: #a96600;
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: var(--ink);
   background: var(--canvas);
 }
@@ -204,6 +204,15 @@ td code { color: #24322d; font: 8px ui-monospace, SFMono-Regular, Consolas, mono
 .filter-pills button { min-height: 26px; padding: 0 9px; border: 0; border-radius: 7px; color: #74807b; background: transparent; cursor: pointer; font-size: 7px; }
 .filter-pills button.active { color: var(--ink); background: white; box-shadow: 0 2px 7px rgba(20,31,27,.07); font-weight: 750; }
 
+.visible-code { display: inline-flex; align-items: center; gap: 9px; }
+.visible-code code { color: #172b24; font-weight: 760; letter-spacing: .02em; }
+.visible-code code.legacy-code { color: #7b8782; font-weight: 600; }
+.visible-code button { padding: 5px 8px; border: 1px solid #d6e5df; border-radius: 7px; color: var(--accent-dark); background: #f7fcfa; cursor: pointer; font-size: 12px; font-weight: 750; }
+.visible-code small { color: #929c98; font-size: 11px; }
+.pagination-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 21px; border-top: 1px solid var(--soft-line); background: #fbfcfb; }
+.pagination-bar > span { color: var(--muted); font-size: 13px; font-weight: 650; }
+.pagination-bar > div { display: flex; gap: 8px; }
+
 .proxy-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; }
 .proxy-card { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fcfdfc; }
 .proxy-card-head { display: flex; align-items: center; justify-content: space-between; }
@@ -218,6 +227,43 @@ td code { color: #24322d; font: 8px ui-monospace, SFMono-Regular, Consolas, mono
 .proxy-actions button { min-height: 30px; border: 1px solid var(--line); border-radius: 8px; background: white; cursor: pointer; font-size: 7px; font-weight: 750; }
 .proxy-actions button:last-child { width: 34px; color: var(--danger); }
 .proxy-unconfigured { opacity: .73; }
+
+/* Readability scale: the console is dense, but never microscopic. */
+body { font-size: 15px; }
+.eyebrow { font-size: 12px; }
+.login-brand b, .sidebar-brand b { font-size: 16px; }
+.login-brand small, .sidebar-brand small, .login-copy p { font-size: 13px; }
+.login-card label, .admin-form label { font-size: 14px; }
+.admin-form label small, .back-link, .text-button, .status { font-size: 13px; }
+.button { font-size: 14px; }
+.button-small { font-size: 12px; }
+.nav-label { font-size: 11px; }
+.nav-item { min-height: 48px; font-size: 14px; }
+.nav-icon { font-size: 16px; }
+.nav-count { font-size: 12px; }
+.service-state b, .sidebar-bottom > a, .sidebar-bottom > button { font-size: 13px; }
+.service-state small { font-size: 11px; }
+.admin-header h1 { font-size: 23px; }
+.welcome-panel p, .welcome-badge b { font-size: 14px; }
+.welcome-badge small { font-size: 12px; }
+.stat-card > span, .stat-card small { font-size: 13px; }
+.panel-heading h3 { font-size: 18px; }
+.panel-heading p, .panel-note { font-size: 13px; }
+.quick-actions b, .inventory-item b, .fixed-rule b, .upload-box b, .inventory-guide li b { font-size: 14px; }
+.quick-actions small, .inventory-item small, .fixed-rule small, .upload-box small, .inventory-guide li p { font-size: 12px; }
+.inventory-empty, .admin-cdk-box p, .empty-state p { font-size: 13px; }
+.admin-cdk-box h4 { font-size: 17px; }
+.admin-cdk-result code, .bundle-card pre { font-size: 13px; }
+.admin-cdk-result button, .upload-box button, .bundle-card button { font-size: 12px; }
+.empty-state b { font-size: 15px; }
+.format-preview > span, .format-preview pre { font-size: 12px; }
+table { font-size: 14px; }
+th { font-size: 12px; }
+td code { font-size: 13px; }
+.state-badge, .cdk-kind, .progress small, .table-action, .filter-pills button { font-size: 12px; }
+.proxy-country b { font-size: 14px; }
+.proxy-country small, .proxy-meta { font-size: 12px; }
+.proxy-url, .proxy-actions button { font-size: 12px; }
 
 .mobile-backdrop { position: fixed; inset: 0; z-index: 35; background: rgba(20,28,25,.35); backdrop-filter: blur(2px); }
 @media (max-width: 1080px) {

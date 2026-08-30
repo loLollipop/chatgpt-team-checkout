@@ -1,3 +1,5 @@
+import { decryptValue } from './encrypted-values.js';
+
 const MAX_PROMO_LENGTH = 240;
 const MAX_IMPORT_SIZE = 1_000;
 const GLOBAL_PROMO_SCOPE = 'GLOBAL';
@@ -139,34 +141,70 @@ export async function importPromoCodes(input, env) {
   };
 }
 
-function publicPromoRecord(row) {
+export async function decryptPromoForAdmin(encryptedCode, scope, env) {
+  if (!encryptedCode || !scope || !env?.PROMO_ENCRYPTION_KEY) return '';
+  try {
+    return normalizePromoCode(await decryptPromoCode(encryptedCode, env.PROMO_ENCRYPTION_KEY, scope));
+  } catch {
+    return '';
+  }
+}
+
+async function decryptCdkForAdmin(row, env) {
+  if (!row.cdk_encrypted_code || !row.cdk_kind || !env?.PROMO_ENCRYPTION_KEY) return '';
+  try {
+    const code = await decryptValue(
+      row.cdk_encrypted_code,
+      env.PROMO_ENCRYPTION_KEY,
+      'cdk:' + row.cdk_kind
+    );
+    return /^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(code) ? code : '';
+  } catch {
+    return '';
+  }
+}
+
+function publicPromoRecord(row, code, cdkCode) {
   const assigned = row.cdk_id != null;
   return {
     id: Number(row.id),
     maskedCode: maskedPromo(row),
+    code: code || maskedPromo(row),
     batchName: row.batch_name || '',
     importedAt: row.imported_at,
     state: assigned ? 'assigned' : 'available',
     assignedAt: row.assigned_at || '',
     assignedCdkId: assigned ? Number(row.cdk_id) : null,
-    assignedCdk: assigned ? '••••-••••-••••-' + row.cdk_suffix : '',
+    assignedCdk: assigned ? (cdkCode || '••••-••••-••••-' + row.cdk_suffix) : '',
   };
 }
 
 export async function listPromoCodes(env, options = {}) {
   if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
-  const limitValue = Number(options.limit || 500);
-  const limit = Number.isInteger(limitValue) && limitValue > 0 && limitValue <= 1_000 ? limitValue : 500;
+  const limitValue = Number(options.limit || 20);
+  const limit = Number.isInteger(limitValue) && limitValue > 0 && limitValue <= 100 ? limitValue : 20;
+  const pageValue = Number(options.page || 1);
+  const page = Number.isInteger(pageValue) && pageValue > 0 ? pageValue : 1;
+  const state = ['available', 'assigned'].includes(options.state) ? options.state : 'all';
+  const stateCondition = state === 'available'
+    ? ' AND a.cdk_id IS NULL'
+    : (state === 'assigned' ? ' AND a.cdk_id IS NOT NULL' : '');
+  const offset = (page - 1) * limit;
   const result = await env.DB.prepare(
-    `SELECT p.id, p.code_suffix, p.batch_name, p.imported_at,
-            a.cdk_id, a.assigned_at, c.code_suffix AS cdk_suffix
+    `SELECT p.id, p.encrypted_code, p.code_suffix, p.country, p.batch_name, p.imported_at,
+            a.cdk_id, a.assigned_at, c.code_suffix AS cdk_suffix,
+            c.encrypted_code AS cdk_encrypted_code, c.kind AS cdk_kind
      FROM promo_codes p
      LEFT JOIN cdk_promo_assignments a ON a.promo_code_id = p.id
      LEFT JOIN cdks c ON c.id = a.cdk_id
-     WHERE p.deleted_at IS NULL
-     ORDER BY p.id DESC LIMIT ?1`
-  ).bind(limit).all();
-  const records = (result?.results || []).map(publicPromoRecord);
+     WHERE p.deleted_at IS NULL${stateCondition}
+     ORDER BY p.id DESC LIMIT ?1 OFFSET ?2`
+  ).bind(limit, offset).all();
+  const records = await Promise.all((result?.results || []).map(async (row) => publicPromoRecord(
+    row,
+    await decryptPromoForAdmin(row.encrypted_code, row.country, env),
+    await decryptCdkForAdmin(row, env)
+  )));
   const statsRow = await env.DB.prepare(
     `SELECT COUNT(*) AS total,
             SUM(CASE WHEN a.cdk_id IS NULL THEN 1 ELSE 0 END) AS available,
@@ -175,6 +213,13 @@ export async function listPromoCodes(env, options = {}) {
      LEFT JOIN cdk_promo_assignments a ON a.promo_code_id = p.id
      WHERE p.deleted_at IS NULL`
   ).first();
+  const filteredRow = await env.DB.prepare(
+    `SELECT COUNT(*) AS total
+     FROM promo_codes p
+     LEFT JOIN cdk_promo_assignments a ON a.promo_code_id = p.id
+     WHERE p.deleted_at IS NULL${stateCondition}`
+  ).first();
+  const filteredTotal = Number(filteredRow?.total || 0);
   return {
     ok: true,
     scope: 'global',
@@ -183,6 +228,13 @@ export async function listPromoCodes(env, options = {}) {
       total: Number(statsRow?.total || 0),
       available: Number(statsRow?.available || 0),
       assigned: Number(statsRow?.assigned || 0),
+    },
+    pagination: {
+      page,
+      limit,
+      total: filteredTotal,
+      totalPages: Math.max(1, Math.ceil(filteredTotal / limit)),
+      state,
     },
   };
 }

@@ -1,4 +1,5 @@
-import { assignedPromoForCdkHash, availablePromoCount } from './promo-codes.js';
+import { decryptPromoForAdmin, assignedPromoForCdkHash, availablePromoCount } from './promo-codes.js';
+import { decryptValue, encryptValue } from './encrypted-values.js';
 
 const CDK_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CDK_GROUPS = 4;
@@ -44,6 +45,10 @@ function databaseReady(env) {
   return Boolean(env?.DB && env?.CDK_HASH_PEPPER);
 }
 
+function visualEncryptionReady(env) {
+  return Boolean(databaseReady(env) && env?.PROMO_ENCRYPTION_KEY);
+}
+
 function rowKind(row) {
   return row?.kind === CDK_KIND_ADMIN ? CDK_KIND_ADMIN : CDK_KIND_STANDARD;
 }
@@ -56,7 +61,7 @@ function recordState(row, now = new Date()) {
   return 'active';
 }
 
-function publicRecord(row, now = new Date()) {
+function publicRecord(row, now = new Date(), revealedCode = '', revealedPromo = '') {
   const kind = rowKind(row);
   const maxUses = Number(row.max_uses);
   const useCount = Number(row.use_count);
@@ -64,6 +69,8 @@ function publicRecord(row, now = new Date()) {
   return {
     id: Number(row.id),
     maskedCode: '••••-••••-••••-' + row.code_suffix,
+    code: revealedCode || '••••-••••-••••-' + row.code_suffix,
+    legacyCode: !revealedCode,
     label: row.label || '',
     kind,
     unlimited,
@@ -74,7 +81,7 @@ function publicRecord(row, now = new Date()) {
     expiresAt: unlimited ? '' : (row.expires_at || ''),
     revokedAt: row.revoked_at || '',
     lastUsedAt: row.last_used_at || '',
-    promoCode: row.promo_suffix ? '••••••' + row.promo_suffix : '',
+    promoCode: revealedPromo || (row.promo_suffix ? '••••••' + row.promo_suffix : ''),
     state: recordState(row, now),
   };
 }
@@ -145,7 +152,7 @@ export async function verifyCdk(value, env, options = {}) {
 }
 
 export async function createCdks(input, env) {
-  if (!databaseReady(env)) return unavailableResult();
+  if (!visualEncryptionReady(env)) return unavailableResult();
   const count = parsePositiveInteger(input?.count, 1, MAX_BATCH_SIZE);
   if (count == null) return { ok: false, error: 'invalid_cdk_count', max: MAX_BATCH_SIZE };
 
@@ -164,13 +171,14 @@ export async function createCdks(input, env) {
   for (let index = 0; index < count; index += 1) {
     const code = randomCdk();
     const codeHash = await hashCdk(code, env.CDK_HASH_PEPPER);
-    generated.push({ code, codeHash });
+    const encryptedCode = await encryptValue(code, env.PROMO_ENCRYPTION_KEY, 'cdk:' + CDK_KIND_STANDARD);
+    generated.push({ code, codeHash, encryptedCode });
     statements.push(
       env.DB.prepare(
         `INSERT INTO cdks
-         (code_hash, code_suffix, label, kind, max_uses, use_count, created_at, expires_at)
-         VALUES (?1, ?2, ?3, 'standard', 1, 0, ?4, ?5)`
-      ).bind(codeHash, code.slice(-4), label, createdAt, expiresAt)
+         (code_hash, code_suffix, label, kind, max_uses, use_count, created_at, expires_at, encrypted_code)
+         VALUES (?1, ?2, ?3, 'standard', 1, 0, ?4, ?5, ?6)`
+      ).bind(codeHash, code.slice(-4), label, createdAt, expiresAt, encryptedCode)
     );
     statements.push(
       env.DB.prepare(
@@ -211,9 +219,10 @@ export async function createCdks(input, env) {
 }
 
 export async function createAdminCdk(input, env) {
-  if (!databaseReady(env)) return unavailableResult();
+  if (!visualEncryptionReady(env)) return unavailableResult();
   const code = randomCdk();
   const codeHash = await hashCdk(code, env.CDK_HASH_PEPPER);
+  const encryptedCode = await encryptValue(code, env.PROMO_ENCRYPTION_KEY, 'cdk:' + CDK_KIND_ADMIN);
   const label = String(input?.label || '管理员通用 CDK').trim().slice(0, 80) || '管理员通用 CDK';
   const createdAt = new Date().toISOString();
   const results = await env.DB.batch([
@@ -222,9 +231,9 @@ export async function createAdminCdk(input, env) {
     ).bind(createdAt),
     env.DB.prepare(
       `INSERT INTO cdks
-       (code_hash, code_suffix, label, kind, max_uses, use_count, created_at, expires_at)
-       VALUES (?1, ?2, ?3, 'admin', 1, 0, ?4, NULL)`
-    ).bind(codeHash, code.slice(-4), label, createdAt),
+       (code_hash, code_suffix, label, kind, max_uses, use_count, created_at, expires_at, encrypted_code)
+       VALUES (?1, ?2, ?3, 'admin', 1, 0, ?4, NULL, ?5)`
+    ).bind(codeHash, code.slice(-4), label, createdAt, encryptedCode),
   ]);
   return {
     ok: true,
@@ -242,18 +251,38 @@ export async function createAdminCdk(input, env) {
 }
 
 export async function listCdks(env, limitValue = 200) {
-  if (!databaseReady(env)) return unavailableResult();
+  if (!visualEncryptionReady(env)) return unavailableResult();
   const limit = parsePositiveInteger(limitValue, 200, 500) || 200;
   const result = await env.DB.prepare(
-    `SELECT c.id, c.code_suffix, c.label, c.kind, c.max_uses, c.use_count, c.created_at,
-            c.expires_at, c.revoked_at, c.last_used_at, p.code_suffix AS promo_suffix
+    `SELECT c.id, c.code_suffix, c.encrypted_code, c.label, c.kind, c.max_uses, c.use_count, c.created_at,
+            c.expires_at, c.revoked_at, c.last_used_at, p.code_suffix AS promo_suffix,
+            p.encrypted_code AS promo_encrypted_code, p.country AS promo_scope
      FROM cdks c
      LEFT JOIN cdk_promo_assignments a ON a.cdk_id = c.id
      LEFT JOIN promo_codes p ON p.id = a.promo_code_id
      ORDER BY c.id DESC LIMIT ?1`
   ).bind(limit).all();
   const now = new Date();
-  const records = (result?.results || []).map((row) => publicRecord(row, now));
+  const records = await Promise.all((result?.results || []).map(async (row) => {
+    let revealedCode = '';
+    if (row.encrypted_code) {
+      try {
+        revealedCode = normalizeCdk(await decryptValue(
+          row.encrypted_code,
+          env.PROMO_ENCRYPTION_KEY,
+          'cdk:' + rowKind(row)
+        ));
+      } catch {
+        revealedCode = '';
+      }
+    }
+    const revealedPromo = await decryptPromoForAdmin(
+      row.promo_encrypted_code,
+      row.promo_scope,
+      env
+    );
+    return publicRecord(row, now, revealedCode, revealedPromo);
+  }));
   return {
     ok: true,
     records,

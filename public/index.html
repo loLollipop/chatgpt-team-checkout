@@ -62,9 +62,13 @@
           <form id="checkout-form" class="workbench-card form-card" novalidate>
             <section class="form-section">
               <div class="section-title-row"><div><span class="step-number">01</span><h2>账户凭证</h2></div><span class="section-tag">必填</span></div>
+              <details class="session-help">
+                <summary><span>?</span><b>如何获取 Session JSON</b><i>展开查看</i></summary>
+                <div><p>在同一浏览器登录 ChatGPT，打开 <a href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer">https://chatgpt.com/api/auth/session</a>，复制返回的完整 JSON，粘贴到下方输入框。</p><strong>请勿把 Token 发送给他人或发布到公开聊天中。</strong></div>
+              </details>
               <label class="field-block" for="access-token">
-                <span class="field-label">Access Token</span>
-                <span class="secret-input"><textarea id="access-token" rows="3" autocomplete="off" spellcheck="false" placeholder="粘贴 eyJ... 或包含 accessToken 的 JSON" required></textarea><button id="toggle-token" class="icon-button" type="button" aria-label="显示或隐藏 Token">◉</button></span>
+                <span class="field-label">Session JSON / Access Token</span>
+                <span class="secret-input"><textarea id="access-token" rows="3" autocomplete="off" spellcheck="false" placeholder="粘贴完整 Session JSON，或直接粘贴 eyJ... Token" required></textarea><button id="toggle-token" class="icon-button" type="button" aria-label="显示或隐藏 Token">◉</button></span>
                 <span class="field-hint">仅用于本次请求，不会写入浏览器存储。</span>
               </label>
             </section>

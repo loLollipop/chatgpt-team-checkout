@@ -10,7 +10,7 @@ const elements = {
   cdkForm: $('#cdk-create-form'), cdkLabel: $('#cdk-label'), cdkCount: $('#cdk-count'), cdkInventoryHint: $('#cdk-inventory-hint'), cdkCreateButton: $('#cdk-create-button'), cdkCreateStatus: $('#cdk-create-status'), cdkTableBody: $('#cdk-table-body'),
   adminCdkCreate: $('#admin-cdk-create'), adminCdkResult: $('#admin-cdk-result'), adminCdkCode: $('#admin-cdk-code'), adminCdkCopy: $('#admin-cdk-copy'), adminCdkStatus: $('#admin-cdk-status'),
   issuedEmpty: $('#issued-empty'), issuedBundles: $('#issued-bundles'), copyAllBundles: $('#copy-all-bundles'),
-  promoTotal: $('#promo-total'), promoAvailable: $('#promo-available'), promoAssigned: $('#promo-assigned'), promoForm: $('#promo-import-form'), promoBatch: $('#promo-batch'), promoText: $('#promo-text'), promoFile: $('#promo-file'), promoFileLabel: $('#promo-file-label'), clearPromoFile: $('#clear-promo-file'), promoImportButton: $('#promo-import-button'), promoImportStatus: $('#promo-import-status'), promoTableBody: $('#promo-table-body'),
+  promoTotal: $('#promo-total'), promoAvailable: $('#promo-available'), promoAssigned: $('#promo-assigned'), promoForm: $('#promo-import-form'), promoBatch: $('#promo-batch'), promoText: $('#promo-text'), promoFile: $('#promo-file'), promoFileLabel: $('#promo-file-label'), clearPromoFile: $('#clear-promo-file'), promoImportButton: $('#promo-import-button'), promoImportStatus: $('#promo-import-status'), promoTableBody: $('#promo-table-body'), promoPageInfo: $('#promo-page-info'), promoPrevPage: $('#promo-prev-page'), promoNextPage: $('#promo-next-page'),
   proxySingleForm: $('#proxy-single-form'), proxyCountry: $('#proxy-country'), proxyUrl: $('#proxy-url'), proxySaveButton: $('#proxy-save-button'), proxySingleStatus: $('#proxy-single-status'), proxyBatchForm: $('#proxy-batch-form'), proxyBatch: $('#proxy-batch'), proxyBatchButton: $('#proxy-batch-button'), proxyBatchStatus: $('#proxy-batch-status'), proxyGrid: $('#proxy-grid'),
 };
 
@@ -25,7 +25,7 @@ const ERROR_MESSAGES = {
 };
 const STATE_LABELS = { active: '有效', exhausted: '已耗尽', expired: '已过期', revoked: '已停用', available: '可用', assigned: '已分配', healthy: '健康', failed: '异常', untested: '未测试' };
 
-const state = { token: '', config: null, cdks: { records: [], stats: {} }, promos: { records: [], stats: {} }, proxies: [], issued: [], fileCodes: [], cdkFilter: 'all', promoFilter: 'all' };
+const state = { token: '', config: null, cdks: { records: [], stats: {} }, promos: { records: [], stats: {}, pagination: {} }, proxies: [], issued: [], fileCodes: [], cdkFilter: 'all', promoFilter: 'all', promoPage: 1, promoPageSize: 20 };
 
 function node(tag, className = '', text = '') {
   const element = document.createElement(tag);
@@ -50,11 +50,24 @@ async function adminFetch(path, options = {}) {
 }
 
 async function loadAllData() {
+  const promoUrl = `/api/admin/promos?limit=${state.promoPageSize}&page=${state.promoPage}&state=${state.promoFilter}`;
   const [config, cdks, promos, proxies] = await Promise.all([
-    fetch('/api/config').then((response) => response.json()), adminFetch('/api/admin/cdks?limit=500'), adminFetch('/api/admin/promos?limit=1000'), adminFetch('/api/admin/proxies'),
+    fetch('/api/config').then((response) => response.json()), adminFetch('/api/admin/cdks?limit=500'), adminFetch(promoUrl), adminFetch('/api/admin/proxies'),
   ]);
   state.config = config; state.cdks = cdks; state.promos = promos; state.proxies = proxies.records || [];
   populateCountrySelects(); renderAll();
+}
+
+async function loadPromoPage(page) {
+  state.promoPage = Math.max(1, Number(page) || 1);
+  const result = await adminFetch(`/api/admin/promos?limit=${state.promoPageSize}&page=${state.promoPage}&state=${state.promoFilter}`);
+  const totalPages = Number(result.pagination?.totalPages || 1);
+  if (state.promoPage > totalPages) {
+    state.promoPage = totalPages;
+    return loadPromoPage(totalPages);
+  }
+  state.promos = result;
+  renderPromos(); renderOverview(); renderServiceState();
 }
 
 function populateSelect(select) {
@@ -94,6 +107,12 @@ function renderOverview() {
 function stateBadge(value) { return node('span', `state-badge state-${value}`, STATE_LABELS[value] || value); }
 function emptyRow(body, columns, text) { body.replaceChildren(); const row = node('tr'); const cell = node('td', 'table-empty', text); cell.colSpan = columns; row.append(cell); body.append(row); }
 function tableCell(content, className = '') { const cell = node('td', className); if (content instanceof Node) cell.append(content); else cell.textContent = String(content ?? ''); return cell; }
+function visibleCode(value, legacy = false) {
+  const wrap = node('div', 'visible-code'); const code = node('code', legacy ? 'legacy-code' : '', value || '—'); wrap.append(code);
+  if (value && !legacy) { const copy = node('button', '', '复制'); copy.type = 'button'; copy.addEventListener('click', () => copyText(value, copy)); wrap.append(copy); }
+  else if (legacy) wrap.append(node('small', '', '历史脱敏'));
+  return wrap;
+}
 
 function renderCdks() {
   elements.cdkTableBody.replaceChildren();
@@ -102,11 +121,11 @@ function renderCdks() {
   if (state.cdkFilter === 'inactive') records = records.filter((record) => record.state !== 'active');
   if (!records.length) { emptyRow(elements.cdkTableBody, 8, '暂无符合条件的 CDK'); return; }
   records.forEach((record) => {
-    const row = node('tr'); const code = node('code', '', record.maskedCode); const type = node('span', `cdk-kind cdk-kind-${record.kind}`, record.kind === 'admin' ? '管理员通用' : '客户'); const progress = node('div', 'progress');
+    const row = node('tr'); const code = visibleCode(record.code || record.maskedCode, Boolean(record.legacyCode)); const promo = visibleCode(record.promoCode || '', String(record.promoCode || '').includes('•')); const type = node('span', `cdk-kind cdk-kind-${record.kind}`, record.kind === 'admin' ? '管理员通用' : '客户'); const progress = node('div', 'progress');
     if (record.unlimited) progress.append(node('small', '', `无限次 · 已用 ${record.useCount} 次`));
     else { const bar = node('span'); const fill = node('i'); fill.style.width = `${Math.min(100, Math.round((record.useCount / Math.max(1, record.maxUses)) * 100))}%`; bar.append(fill); progress.append(bar, node('small', '', `${record.useCount}/${record.maxUses}`)); }
     const action = node('button', 'table-action', record.state === 'revoked' ? '已停用' : '停用'); action.type = 'button'; action.disabled = record.state === 'revoked'; action.addEventListener('click', () => revokeCdk(record));
-    row.append(tableCell(code), tableCell(type), tableCell(record.label || '—'), tableCell(record.promoCode || '—'), tableCell(progress), tableCell(record.unlimited ? '长期' : formatDate(record.expiresAt)), tableCell(stateBadge(record.state)), tableCell(action)); elements.cdkTableBody.append(row);
+    row.append(tableCell(code), tableCell(type), tableCell(record.label || '—'), tableCell(promo), tableCell(progress), tableCell(record.unlimited ? '长期' : formatDate(record.expiresAt)), tableCell(stateBadge(record.state)), tableCell(action)); elements.cdkTableBody.append(row);
   });
 }
 
@@ -127,9 +146,11 @@ function renderIssued() {
 
 function renderPromos() {
   const stats = state.promos.stats || {}; elements.promoTotal.textContent = stats.total ?? 0; elements.promoAvailable.textContent = stats.available ?? 0; elements.promoAssigned.textContent = stats.assigned ?? 0;
-  let records = state.promos.records || []; if (state.promoFilter !== 'all') records = records.filter((record) => record.state === state.promoFilter);
+  const records = state.promos.records || []; const pagination = state.promos.pagination || {};
+  const page = Number(pagination.page || state.promoPage); const totalPages = Number(pagination.totalPages || 1); const total = Number(pagination.total || 0); state.promoPage = page;
+  elements.promoPageInfo.textContent = `第 ${page} / ${totalPages} 页 · 共 ${total} 条`; elements.promoPrevPage.disabled = page <= 1; elements.promoNextPage.disabled = page >= totalPages;
   elements.promoTableBody.replaceChildren(); if (!records.length) { emptyRow(elements.promoTableBody, 6, '暂无符合条件的优惠码'); return; }
-  records.forEach((record) => { const row = node('tr'); const code = node('code', '', record.maskedCode); const action = node('button', 'table-action', record.state === 'assigned' ? '已占用' : '删除'); action.type = 'button'; action.disabled = record.state === 'assigned'; action.addEventListener('click', () => deletePromo(record));
+  records.forEach((record) => { const row = node('tr'); const code = visibleCode(record.code || record.maskedCode, String(record.code || '').includes('•')); const action = node('button', 'table-action', record.state === 'assigned' ? '已占用' : '删除'); action.type = 'button'; action.disabled = record.state === 'assigned'; action.addEventListener('click', () => deletePromo(record));
     row.append(tableCell(code), tableCell(record.batchName || '—'), tableCell(formatDate(record.importedAt, '—')), tableCell(record.assignedCdk || '—'), tableCell(stateBadge(record.state)), tableCell(action)); elements.promoTableBody.append(row); });
 }
 
@@ -162,7 +183,7 @@ elements.adminCdkCreate.addEventListener('click', async () => { setButtonLoading
 elements.adminCdkCopy.addEventListener('click', () => copyText(elements.adminCdkCode.textContent, elements.adminCdkCopy));
 elements.copyAllBundles.addEventListener('click', () => copyText(state.issued.map(deliveryText).join('\n\n'), elements.copyAllBundles));
 $$('[data-cdk-filter]').forEach((button) => button.addEventListener('click', () => { state.cdkFilter = button.dataset.cdkFilter; $$('[data-cdk-filter]').forEach((item) => item.classList.toggle('active', item === button)); renderCdks(); }));
-async function revokeCdk(record) { if (!confirm(`确定停用 ${record.maskedCode} 吗？此操作不会回收已分配的优惠码。`)) return; try { await adminFetch(`/api/admin/cdks/${record.id}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, 'CDK 已停用。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
+async function revokeCdk(record) { if (!confirm(`确定停用 ${record.code || record.maskedCode} 吗？此操作不会回收已分配的优惠码。`)) return; try { await adminFetch(`/api/admin/cdks/${record.id}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, 'CDK 已停用。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 
 function splitTextCodes(text) { return String(text || '').split(/[\r\n,;\t]+/).map((value) => value.trim()).filter(Boolean); }
 async function codesFromFile(file) {
@@ -174,9 +195,11 @@ async function codesFromFile(file) {
 }
 elements.promoFile.addEventListener('change', async () => { const file = elements.promoFile.files?.[0]; state.fileCodes = []; if (!file) return; elements.promoFileLabel.textContent = `正在读取 ${file.name}…`; try { state.fileCodes = await codesFromFile(file); elements.promoFileLabel.textContent = `${file.name} · 识别到 ${state.fileCodes.length} 个非空单元格`; elements.clearPromoFile.hidden = false; setStatus(elements.promoImportStatus, '文件读取完成，点击“导入优惠码”写入库存。', 'success'); } catch (error) { elements.promoFile.value = ''; elements.promoFileLabel.textContent = '将读取所有非空单元格'; setStatus(elements.promoImportStatus, error.message, 'error'); } });
 elements.clearPromoFile.addEventListener('click', () => { elements.promoFile.value = ''; state.fileCodes = []; elements.clearPromoFile.hidden = true; elements.promoFileLabel.textContent = '将读取所有非空单元格'; });
-elements.promoForm.addEventListener('submit', async (event) => { event.preventDefault(); const codes = [...splitTextCodes(elements.promoText.value), ...state.fileCodes]; if (!codes.length) { setStatus(elements.promoImportStatus, '请粘贴优惠码或选择文件。', 'error'); return; } setButtonLoading(elements.promoImportButton, true, '正在导入…', '导入优惠码'); setStatus(elements.promoImportStatus, `正在校验并加密 ${codes.length} 条数据…`, 'info'); try { const result = await adminFetch('/api/admin/promos', { method: 'POST', body: JSON.stringify({ batchName: elements.promoBatch.value.trim(), codes }) }); setStatus(elements.promoImportStatus, `导入完成：新增 ${result.importedCount}，重复 ${result.duplicateCount}，无效 ${result.invalidCount}。`, 'success'); elements.promoText.value = ''; elements.clearPromoFile.click(); await loadAllData(); } catch (error) { setStatus(elements.promoImportStatus, error.message, 'error'); } finally { setButtonLoading(elements.promoImportButton, false, '正在导入…', '导入优惠码'); } });
-$$('[data-promo-filter]').forEach((button) => button.addEventListener('click', () => { state.promoFilter = button.dataset.promoFilter; $$('[data-promo-filter]').forEach((item) => item.classList.toggle('active', item === button)); renderPromos(); }));
-async function deletePromo(record) { if (!confirm(`确定删除未分配优惠码 ${record.maskedCode} 吗？`)) return; try { await adminFetch(`/api/admin/promos/${record.id}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, '优惠码已从可用库存删除。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
+elements.promoForm.addEventListener('submit', async (event) => { event.preventDefault(); const codes = [...splitTextCodes(elements.promoText.value), ...state.fileCodes]; if (!codes.length) { setStatus(elements.promoImportStatus, '请粘贴优惠码或选择文件。', 'error'); return; } setButtonLoading(elements.promoImportButton, true, '正在导入…', '导入优惠码'); setStatus(elements.promoImportStatus, `正在校验并加密 ${codes.length} 条数据…`, 'info'); try { const result = await adminFetch('/api/admin/promos', { method: 'POST', body: JSON.stringify({ batchName: elements.promoBatch.value.trim(), codes }) }); setStatus(elements.promoImportStatus, `导入完成：新增 ${result.importedCount}，重复 ${result.duplicateCount}，无效 ${result.invalidCount}。`, 'success'); elements.promoText.value = ''; elements.clearPromoFile.click(); state.promoPage = 1; await loadAllData(); } catch (error) { setStatus(elements.promoImportStatus, error.message, 'error'); } finally { setButtonLoading(elements.promoImportButton, false, '正在导入…', '导入优惠码'); } });
+$$('[data-promo-filter]').forEach((button) => button.addEventListener('click', async () => { state.promoFilter = button.dataset.promoFilter; $$('[data-promo-filter]').forEach((item) => item.classList.toggle('active', item === button)); try { await loadPromoPage(1); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }));
+elements.promoPrevPage.addEventListener('click', () => loadPromoPage(state.promoPage - 1).catch((error) => setStatus(elements.globalStatus, error.message, 'error')));
+elements.promoNextPage.addEventListener('click', () => loadPromoPage(state.promoPage + 1).catch((error) => setStatus(elements.globalStatus, error.message, 'error')));
+async function deletePromo(record) { if (!confirm(`确定删除未分配优惠码 ${record.code || record.maskedCode} 吗？`)) return; try { await adminFetch(`/api/admin/promos/${record.id}`, { method: 'DELETE' }); await loadPromoPage(state.promoPage); setStatus(elements.globalStatus, '优惠码已从可用库存删除。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 
 function parseProxyBatch(value) { const text = String(value || '').trim(); if (!text) throw new Error('请粘贴代理配置。'); if (text.startsWith('{')) { const parsed = JSON.parse(text); if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('JSON 必须是国家到代理 URL 的对象。'); return parsed; } const routes = {}; text.split(/\r?\n/).forEach((line) => { const trimmed = line.trim(); if (!trimmed) return; const index = trimmed.indexOf('='); if (index < 2) throw new Error(`无法解析：${trimmed}`); routes[trimmed.slice(0, index).trim().toUpperCase()] = trimmed.slice(index + 1).trim(); }); return routes; }
 elements.proxySingleForm.addEventListener('submit', async (event) => { event.preventDefault(); if (!elements.proxyUrl.value.trim()) { setStatus(elements.proxySingleStatus, '请输入代理 URL。', 'error'); return; } setButtonLoading(elements.proxySaveButton, true, '正在保存…', '保存并加密'); try { await adminFetch('/api/admin/proxies', { method: 'POST', body: JSON.stringify({ country: elements.proxyCountry.value, proxyUrl: elements.proxyUrl.value.trim() }) }); elements.proxyUrl.value = ''; setStatus(elements.proxySingleStatus, '代理已加密保存。', 'success'); await loadAllData(); } catch (error) { setStatus(elements.proxySingleStatus, error.message, 'error'); } finally { setButtonLoading(elements.proxySaveButton, false, '正在保存…', '保存并加密'); } });

@@ -30,6 +30,16 @@ class MemoryStatement {
       const assigned = rows.filter((row) => this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id)).length;
       return { total: rows.length, available: rows.length - assigned, assigned };
     }
+    if (this.query.includes('SELECT COUNT(*) AS total') && this.query.includes('FROM promo_codes p')) {
+      const rows = this.database.promoRows.filter((row) => {
+        if (row.deleted_at) return false;
+        const assigned = this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id);
+        if (this.query.includes('a.cdk_id IS NULL')) return !assigned;
+        if (this.query.includes('a.cdk_id IS NOT NULL')) return assigned;
+        return true;
+      });
+      return { total: rows.length };
+    }
     if (this.query.includes('JOIN cdk_promo_assignments a ON a.cdk_id = c.id') && this.query.includes('WHERE c.code_hash = ?1')) {
       const cdk = this.database.rows.find((row) => row.code_hash === this.values[0]);
       const assignment = cdk && this.database.assignmentRows.find((row) => row.cdk_id === cdk.id);
@@ -50,17 +60,22 @@ class MemoryStatement {
 
   async all() {
     if (this.query.includes('FROM promo_codes p') && this.query.includes('ORDER BY p.id DESC')) {
-      const countryFiltered = this.query.includes('WHERE p.country = ?1');
-      const country = countryFiltered ? this.values[0] : '';
-      const limit = Number(this.values[countryFiltered ? 1 : 0]) || 500;
+      const limit = Number(this.values[0]) || 20;
+      const offset = Number(this.values[1]) || 0;
       const rows = this.database.promoRows
-        .filter((row) => !row.deleted_at && (!country || row.country === country))
+        .filter((row) => {
+          if (row.deleted_at) return false;
+          const assigned = this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id);
+          if (this.query.includes('a.cdk_id IS NULL')) return !assigned;
+          if (this.query.includes('a.cdk_id IS NOT NULL')) return assigned;
+          return true;
+        })
         .sort((left, right) => right.id - left.id)
-        .slice(0, limit)
+        .slice(offset, offset + limit)
         .map((row) => {
           const assignment = this.database.assignmentRows.find((item) => item.promo_code_id === row.id);
           const cdk = assignment && this.database.rows.find((item) => item.id === assignment.cdk_id);
-          return { ...row, cdk_id: assignment?.cdk_id ?? null, assigned_at: assignment?.assigned_at ?? null, cdk_suffix: cdk?.code_suffix ?? null };
+          return { ...row, cdk_id: assignment?.cdk_id ?? null, assigned_at: assignment?.assigned_at ?? null, cdk_suffix: cdk?.code_suffix ?? null, cdk_encrypted_code: cdk?.encrypted_code ?? null, cdk_kind: cdk?.kind ?? null };
         });
       return { results: rows };
     }
@@ -73,7 +88,7 @@ class MemoryStatement {
       results: [...this.database.rows].sort((left, right) => right.id - left.id).slice(0, limit).map((row) => {
         const assignment = this.database.assignmentRows.find((item) => item.cdk_id === row.id);
         const promo = assignment && this.database.promoRows.find((item) => item.id === assignment.promo_code_id);
-        return { ...row, promo_country: promo?.country ?? null, promo_suffix: promo?.code_suffix ?? null };
+        return { ...row, promo_scope: promo?.country ?? null, promo_suffix: promo?.code_suffix ?? null, promo_encrypted_code: promo?.encrypted_code ?? null };
       }),
     };
   }
@@ -150,7 +165,9 @@ class MemoryStatement {
 
     if (this.query.startsWith('INSERT INTO cdks')) {
       const admin = this.query.includes("'admin'");
-      const [codeHash, codeSuffix, label, createdAt, expiresAt] = this.values;
+      const [codeHash, codeSuffix, label, createdAt, standardExpiryOrEncrypted, standardEncrypted] = this.values;
+      const expiresAt = admin ? null : standardExpiryOrEncrypted;
+      const encryptedCode = admin ? standardExpiryOrEncrypted : standardEncrypted;
       const id = this.database.nextId++;
       this.database.rows.push({
         id,
@@ -161,7 +178,8 @@ class MemoryStatement {
         max_uses: 1,
         use_count: 0,
         created_at: createdAt,
-        expires_at: admin ? null : expiresAt,
+        expires_at: expiresAt,
+        encrypted_code: encryptedCode,
         revoked_at: null,
         last_used_at: null,
       });
@@ -357,7 +375,7 @@ test('admin batch import saves multiple country routes atomically', async () => 
   assert.equal(env.DB.proxyRows.every((row) => row.encrypted_url.startsWith('v1.')), true);
 });
 
-test('admin normalizes promo links into encrypted global codes and never lists plaintext', async () => {
+test('admin normalizes encrypted promo links and reveals only the extracted code', async () => {
   const env = createEnv();
   const promo = 'chatgpt.com/p/E3NW9QBJZXKNM9ZE';
   const importResponse = await adminRequest(env, '/api/admin/promos', {
@@ -380,8 +398,27 @@ test('admin normalizes promo links into encrypted global codes and never lists p
   const list = JSON.parse(listText);
   assert.equal(list.stats.available, 1);
   assert.equal(list.records[0].maskedCode.endsWith('KNM9ZE'), true);
-  assert.equal(listText.includes('E3NW9QBJZXKNM9ZE'), false);
+  assert.equal(list.records[0].code, 'E3NW9QBJZXKNM9ZE');
+  assert.equal(listText.includes('chatgpt.com/p/'), false);
   assert.equal('encrypted_code' in list.records[0], false);
+});
+
+test('promo inventory paginates and filters without returning every record', async () => {
+  const env = createEnv();
+  const codes = Array.from({ length: 25 }, (_, index) => `PAGECODE${String(index + 1).padStart(8, '0')}`);
+  const importResponse = await adminRequest(env, '/api/admin/promos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ batchName: 'pagination', codes }),
+  });
+  assert.equal(importResponse.status, 201);
+
+  const secondPageResponse = await adminRequest(env, '/api/admin/promos?limit=10&page=2&state=available');
+  const secondPage = await secondPageResponse.json();
+  assert.equal(secondPageResponse.status, 200);
+  assert.equal(secondPage.records.length, 10);
+  assert.deepEqual(secondPage.pagination, { page: 2, limit: 10, total: 25, totalPages: 3, state: 'available' });
+  assert.equal(secondPage.records.every((record) => record.state === 'available'), true);
 });
 
 test('CDK generation atomically assigns distinct global promo codes and exposes plaintext once', async () => {
@@ -416,8 +453,11 @@ test('CDK generation atomically assigns distinct global promo codes and exposes 
   const list = JSON.parse(listText);
   assert.equal(list.records.every((record) => record.kind === 'standard'), true);
   assert.equal(list.records.every((record) => record.maxUses === 1), true);
-  assert.equal(listText.includes('AAAAAAAAAAAAAAA1'), false);
-  assert.equal(listText.includes('AAAAAAAAAAAAAAA2'), false);
+  assert.equal(listText.includes('AAAAAAAAAAAAAAA1'), true);
+  assert.equal(listText.includes('AAAAAAAAAAAAAAA2'), true);
+  assert.equal(list.records.every((record) => record.legacyCode === false), true);
+  assert.equal(env.DB.rows.every((record) => record.encrypted_code.startsWith('v1.')), true);
+  assert.equal(env.DB.rows.some((record) => issued.codes.some((item) => record.encrypted_code.includes(item.code))), false);
 });
 
 test('CDK generation fails without partially creating records when promo inventory is insufficient', async () => {
@@ -436,7 +476,7 @@ test('CDK generation fails without partially creating records when promo invento
   assert.equal(env.DB.assignmentRows.length, 0);
 });
 
-test('admin can issue, list and revoke a CDK without persisting plaintext', async () => {
+test('admin can visualize and revoke a CDK while D1 stores only ciphertext', async () => {
   const env = createEnv();
   const issued = await issueCdk(env, { label: '客户 A' });
   assert.match(issued.code, /^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/);
@@ -447,7 +487,10 @@ test('admin can issue, list and revoke a CDK without persisting plaintext', asyn
   assert.equal(list.records.length, 1);
   assert.equal(list.records[0].maskedCode.endsWith(issued.code.slice(-4)), true);
   assert.equal(list.records[0].label, '客户 A');
-  assert.equal(listText.includes(issued.code), false);
+  assert.equal(list.records[0].code, issued.code);
+  assert.equal(list.records[0].legacyCode, false);
+  assert.equal(listText.includes(issued.code), true);
+  assert.equal(env.DB.rows[0].encrypted_code.includes(issued.code), false);
 
   const revokeResponse = await adminRequest(env, '/api/admin/cdks/' + issued.id, { method: 'DELETE' });
   assert.equal(revokeResponse.status, 200);

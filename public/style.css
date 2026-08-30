@@ -12,7 +12,7 @@
   --danger: #c43b3b;
   --shadow: 0 20px 60px rgba(23, 32, 29, 0.09);
   --radius: 22px;
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: var(--ink);
   background: var(--canvas);
   font-synthesis: none;
@@ -109,6 +109,19 @@ a { color: inherit; text-decoration: none; }
 .section-tag-muted { color: #71807a; background: #f0f3f2; }
 
 .field-block { position: relative; display: grid; gap: 8px; min-width: 0; }
+.session-help { margin-bottom: 17px; overflow: hidden; border: 1px solid #d8e9e2; border-radius: 13px; background: #f7fcfa; }
+.session-help summary { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 10px; min-height: 50px; padding: 9px 13px; cursor: pointer; list-style: none; }
+.session-help summary::-webkit-details-marker { display: none; }
+.session-help summary > span { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 8px; color: white; background: var(--accent); font-size: 14px; font-weight: 850; }
+.session-help summary b { font-size: 14px; }
+.session-help summary i { color: var(--accent-dark); font-size: 12px; font-style: normal; font-weight: 700; }
+.session-help[open] summary { border-bottom: 1px solid #deebe6; background: #f0faf6; }
+.session-help[open] summary i { font-size: 0; }
+.session-help[open] summary i::after { font-size: 12px; content: "收起说明"; }
+.session-help > div { padding: 14px 16px 16px; }
+.session-help p { margin: 0; color: #4f5e58; font-size: 13px; line-height: 1.75; }
+.session-help a { color: var(--accent-dark); font-weight: 750; text-decoration: underline; text-underline-offset: 3px; }
+.session-help strong { display: block; margin-top: 9px; color: #a44b22; font-size: 12px; line-height: 1.6; }
 .two-column-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .field-block input, .field-block textarea, .country-search-wrap input { width: 100%; border: 1px solid var(--line); border-radius: 11px; outline: none; background: #fbfcfb; color: var(--ink); transition: border-color .2s, box-shadow .2s, background .2s; }
 .field-block input { height: 46px; padding: 0 13px; }
@@ -211,6 +224,36 @@ a { color: inherit; text-decoration: none; }
 .help-card b { font-size: 10px; }
 .help-card p { margin: 4px 0 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
 .site-footer { display: flex; justify-content: space-between; width: min(1240px, calc(100% - 48px)); margin: 0 auto; padding: 22px 0 28px; border-top: 1px solid var(--line); color: #8d9793; font-size: 9px; }
+
+/* Readability scale: operational content stays comfortable at normal zoom. */
+body { font-size: 16px; }
+.brand-lockup strong, .brand-name { font-size: 17px; }
+.brand-lockup small { font-size: 13px; }
+.eyebrow { font-size: 12px; }
+.gate-copy p, .workspace-heading p { font-size: 16px; }
+.gate-form > label, .field-label, .result-card > label { font-size: 14px; }
+.button-large { font-size: 16px; }
+.button-compact { font-size: 14px; }
+.field-hint, .inline-status { font-size: 13px; }
+.gate-trust, .gate-footer { font-size: 12px; }
+.auth-chip b, .secure-note b { font-size: 14px; }
+.auth-chip small, .secure-note small { font-size: 12px; }
+.section-title-row h2 { font-size: 19px; }
+.step-number, .section-tag { font-size: 12px; }
+.selected-copy b, .country-option b, .price-reference b, .seat-copy b { font-size: 14px; }
+.selected-copy small, .country-option small, .price-reference small, .seat-copy small { font-size: 12px; }
+.country-menu-head, .segmented-control small { font-size: 11px; }
+.segmented-control span, .stepper input { font-size: 14px; }
+.price-values b { font-size: 16px; }
+.seat-icon { font-size: 14px; }
+.summary-head { font-size: 16px; }
+.summary-head small, .summary-country small { font-size: 12px; }
+.summary-country b, .summary-card dd { font-size: 14px; }
+.summary-card dt { font-size: 13px; }
+.summary-total dt, .summary-total dd { font-size: 16px; }
+.summary-tip p { font-size: 12px; }
+.result-card p, .help-card p, .site-footer { font-size: 13px; }
+.result-url-wrap input, .result-url-wrap button, .help-card b { font-size: 13px; }
 
 @media (max-width: 920px) {
   .workspace-grid { grid-template-columns: 1fr; }

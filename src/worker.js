@@ -482,7 +482,9 @@ async function handleAdminPromos(request, env) {
   if (request.method === 'GET') {
     const url = new URL(request.url);
     const result = await safePromoOperation(() => listPromoCodes(env, {
-      limit: url.searchParams.get('limit') || 500,
+      limit: url.searchParams.get('limit') || 20,
+      page: url.searchParams.get('page') || 1,
+      state: url.searchParams.get('state') || 'all',
     }));
     if (!result.ok) return promoFailureResponse(result, env);
     return jsonResponse(result, 200, { 'Cache-Control': 'no-store' }, env);

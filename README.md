@@ -9,12 +9,14 @@
 - 支持长期有效、可重复使用的管理员通用 CDK；重新生成时自动停用旧码。
 - `/admin` 管理后台按概览、CDK、优惠码、国家代理分类。
 - 优惠码支持 Excel、CSV、TXT 和粘贴导入；所有国家共用全球库存，生成客户 CDK 时原子分配一条。
-- 兼容导入完整 `chatgpt.com/p/...` 链接，存储与交付时只保留 `/p/` 后的优惠码。
+- 兼容导入完整 `chatgpt.com/p/...` 链接，自动截取、存储并展示 `/p/` 后的优惠码；库存列表支持状态筛选和分页。
+- 管理后台可直接查看、复制新生成的 CDK、优惠码及其分配关系；敏感值仅通过鉴权后的管理接口解密返回。
 - 生成结果可直接复制“自助提链 / CDK / 优惠码”三行交付文本。
-- CDK 明文只在生成时返回一次，D1 只保存 `SHA-256(Pepper + CDK)` 和末四位。
+- CDK 同时保存 `SHA-256(Pepper + CDK)` 校验值和 AES-GCM 密文，数据库中不出现明文；升级前的历史 CDK 因只有哈希，只能继续脱敏显示。
 - 国家下拉支持美国、埃及、英国、智利、菲律宾、日本、泰国、印度、瑞典，并显示国旗、当地币种与美元参考价。
 - 后端强制匹配国家币种，并通过对应国家代理生成 Checkout 链接。
 - 代理凭据使用 AES-GCM 加密存入 D1，管理 API 只返回脱敏地址。
+- 工作台与管理后台均使用放大的中文排版；Session JSON 输入框提供可展开的安全获取说明。
 
 ## 请求链路
 
@@ -205,11 +207,11 @@ CDK 可处于以下状态：
 Authorization: Bearer <ADMIN_TOKEN>
 ```
 
-- `GET /api/admin/cdks?limit=500`：CDK 列表和统计。
+- `GET /api/admin/cdks?limit=500`：CDK 可视化列表和统计；新 CDK 返回可复制明文，历史哈希记录保持脱敏。
 - `POST /api/admin/cdks`：生成 CDK。
 - `POST /api/admin/cdks/universal`：生成新的管理员通用 CDK，并自动停用旧管理员 CDK。
 - `DELETE /api/admin/cdks/:id`：吊销 CDK。
-- `GET /api/admin/promos?limit=1000`：优惠码库存、分配状态和统计。
+- `GET /api/admin/promos?page=1&limit=20&state=all`：优惠码可视化库存、分配状态、统计和分页信息。`limit` 最大 100，`state` 可选 `all`、`available`、`assigned`。
 - `POST /api/admin/promos`：批量加密导入优惠码。
 - `DELETE /api/admin/promos/:id`：删除未分配优惠码；已分配优惠码不能回收。
 - `GET /api/admin/proxies`：返回代理脱敏列表。
@@ -219,9 +221,9 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 ## 安全说明
 
-- Access Token、CDK 明文和 ADMIN_TOKEN 都不会写入浏览器持久存储。
-- D1 不保存 CDK 明文，数据库泄露后仍需要服务端 Pepper 才能校验候选值。
-- 优惠码使用 AES-GCM 加密保存；管理列表只返回脱敏值，明文仅在 CDK 一次性交付响应中出现。
+- Access Token、解密后的 CDK 和 ADMIN_TOKEN 都不会写入浏览器持久存储，管理接口响应禁用缓存。
+- D1 不保存 CDK 明文：校验使用带 Pepper 的 SHA-256 哈希，可视化使用 AES-GCM 密文。只有通过 Bearer 鉴权的管理接口可以解密显示新 CDK。
+- 优惠码使用 AES-GCM 加密保存；只有通过 Bearer 鉴权的管理接口和对应 CDK 的交付响应可以返回解密值，公共接口不会列出库存明文。
 - 管理 Token、哈希 Pepper 和 Relay Token 只存在于服务端 Secret；代理凭据经 AES-GCM 加密后存入 D1。
 - CDK 校核有独立限速，Checkout 也有 IP 限速。
 - Relay 只允许两个固定 Checkout 目标，测试端点也只允许访问固定的 ipify 地址，不能作为开放代理。
