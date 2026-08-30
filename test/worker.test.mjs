@@ -417,6 +417,32 @@ test('admin can probe and delete an imported proxy', async () => {
   assert.equal(env.DB.proxyRows.length, 0);
 });
 
+test('admin preserves a safe Relay failure reason when a proxy probe fails', async () => {
+  const env = createEnv([]);
+  assert.equal((await saveProxy(env, 'US', 'http://user:pass@proxy.example:8080')).status, 201);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    ok: false,
+    error: 'proxy_probe_failed',
+    reason: 'proxy_payment_required',
+  }), {
+    status: 502,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  try {
+    const response = await adminRequest(env, '/api/admin/proxies/US/test', { method: 'POST' });
+    const data = await response.json();
+    assert.equal(response.status, 502);
+    assert.equal(data.error, 'proxy_test_failed');
+    assert.equal(data.reason, 'proxy_payment_required');
+    assert.equal(env.DB.proxyRows[0].last_test_status, 'failed');
+    assert.equal(env.DB.proxyRows[0].last_error, 'proxy_payment_required');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('checkout fails closed when selected country has no proxy without consuming CDK', async () => {
   const env = createEnv();
   const issued = await issueCdk(env);

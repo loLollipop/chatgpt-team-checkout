@@ -47,6 +47,7 @@
           if (!response.ok || !data.ok) {
             var error = new Error(data.error || 'request_failed');
             error.status = response.status;
+            error.detail = data;
             throw error;
           }
           return data;
@@ -56,6 +57,12 @@
 
   function friendlyError(error) {
     var code = error && error.message ? error.message : String(error || '');
+    if (code === 'proxy_test_failed' && error.detail && error.detail.reason === 'proxy_authentication_failed') {
+      return '代理认证失败（407），请重新检查 Webshare 用户名、密码和账户状态';
+    }
+    if (code === 'proxy_test_failed' && error.detail && error.detail.reason === 'proxy_payment_required') {
+      return '代理服务返回 402，请检查 Webshare 套餐是否到期或流量额度是否耗尽';
+    }
     var messages = {
       admin_unauthorized: '管理 Token 不正确',
       admin_not_configured: 'Worker 尚未配置 ADMIN_TOKEN',

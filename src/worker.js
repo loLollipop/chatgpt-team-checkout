@@ -513,7 +513,7 @@ async function testDynamicProxy(country, env) {
           exitIp,
           latencyMs,
         }
-      : { ok: false, error: String(data.error || 'relay_probe_failed').slice(0, 160) };
+      : { ok: false, error: String(data.reason || data.error || 'relay_probe_failed').slice(0, 160) };
   } catch (error) {
     testResult = {
       ok: false,

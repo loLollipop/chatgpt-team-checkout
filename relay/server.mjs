@@ -148,6 +148,18 @@ function sanitizeTargetHeaders(headers) {
   return sanitized.authorization ? sanitized : null;
 }
 
+function safeProxyError(error) {
+  const detail = [error?.code, error?.message, error?.cause?.code, error?.cause?.message]
+    .filter(Boolean)
+    .join(': ')
+    .replace(/\/\/[^@\s]+@/g, '//***@')
+    .replace(/Basic\s+[A-Za-z0-9+/=]+/gi, 'Basic [redacted]')
+    .slice(0, 200);
+  if (/407|proxy authentication required/i.test(detail)) return 'proxy_authentication_failed';
+  if (/402|payment required/i.test(detail)) return 'proxy_payment_required';
+  return detail || 'proxy_request_failed';
+}
+
 async function handleForward(incoming, outgoing) {
   if (!hasValidToken(incoming.headers.authorization)) {
     jsonResponse(outgoing, 401, { ok: false, error: 'relay_unauthorized' });
@@ -204,6 +216,7 @@ async function handleForward(incoming, outgoing) {
     });
     outgoing.end(responseBody);
   } catch (error) {
+    process.stderr.write('Forward request failed: ' + safeProxyError(error) + '\n');
     const errorCode = error.message === 'upstream_response_too_large' ? error.message : 'proxy_request_failed';
     jsonResponse(outgoing, 502, { ok: false, error: errorCode });
   }
@@ -264,8 +277,10 @@ async function handleProbe(incoming, outgoing) {
       return;
     }
     jsonResponse(outgoing, 200, { ok: true, exitIp, latencyMs: Date.now() - startedAt });
-  } catch {
-    jsonResponse(outgoing, 502, { ok: false, error: 'proxy_probe_failed' });
+  } catch (error) {
+    const reason = safeProxyError(error);
+    process.stderr.write('Proxy probe failed: ' + reason + '\n');
+    jsonResponse(outgoing, 502, { ok: false, error: 'proxy_probe_failed', reason });
   }
 }
 
