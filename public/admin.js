@@ -7,9 +7,10 @@ const elements = {
   pageTitle: $('#page-title'), pageEyebrow: $('#page-eyebrow'), globalStatus: $('#global-status'), serviceDot: $('#service-dot'), serviceTitle: $('#service-title'), serviceDetail: $('#service-detail'),
   navCdkCount: $('#nav-cdk-count'), navPromoCount: $('#nav-promo-count'), navProxyCount: $('#nav-proxy-count'),
   overviewCdkActive: $('#overview-cdk-active'), overviewCdkTotal: $('#overview-cdk-total'), overviewPromoAvailable: $('#overview-promo-available'), overviewPromoTotal: $('#overview-promo-total'), overviewProxyReady: $('#overview-proxy-ready'), overviewProxyTotal: $('#overview-proxy-total'), overviewPromoAssigned: $('#overview-promo-assigned'), inventoryList: $('#inventory-list'),
-  cdkForm: $('#cdk-create-form'), cdkLabel: $('#cdk-label'), cdkCount: $('#cdk-count'), cdkMaxUses: $('#cdk-max-uses'), cdkExpiry: $('#cdk-expiry'), cdkPromoCountry: $('#cdk-promo-country'), cdkInventoryHint: $('#cdk-inventory-hint'), cdkCreateButton: $('#cdk-create-button'), cdkCreateStatus: $('#cdk-create-status'), cdkTableBody: $('#cdk-table-body'),
+  cdkForm: $('#cdk-create-form'), cdkLabel: $('#cdk-label'), cdkCount: $('#cdk-count'), cdkInventoryHint: $('#cdk-inventory-hint'), cdkCreateButton: $('#cdk-create-button'), cdkCreateStatus: $('#cdk-create-status'), cdkTableBody: $('#cdk-table-body'),
+  adminCdkCreate: $('#admin-cdk-create'), adminCdkResult: $('#admin-cdk-result'), adminCdkCode: $('#admin-cdk-code'), adminCdkCopy: $('#admin-cdk-copy'), adminCdkStatus: $('#admin-cdk-status'),
   issuedEmpty: $('#issued-empty'), issuedBundles: $('#issued-bundles'), copyAllBundles: $('#copy-all-bundles'),
-  promoTotal: $('#promo-total'), promoAvailable: $('#promo-available'), promoAssigned: $('#promo-assigned'), promoForm: $('#promo-import-form'), promoCountry: $('#promo-country'), promoBatch: $('#promo-batch'), promoText: $('#promo-text'), promoFile: $('#promo-file'), promoFileLabel: $('#promo-file-label'), clearPromoFile: $('#clear-promo-file'), promoImportButton: $('#promo-import-button'), promoImportStatus: $('#promo-import-status'), promoTableBody: $('#promo-table-body'),
+  promoTotal: $('#promo-total'), promoAvailable: $('#promo-available'), promoAssigned: $('#promo-assigned'), promoForm: $('#promo-import-form'), promoBatch: $('#promo-batch'), promoText: $('#promo-text'), promoFile: $('#promo-file'), promoFileLabel: $('#promo-file-label'), clearPromoFile: $('#clear-promo-file'), promoImportButton: $('#promo-import-button'), promoImportStatus: $('#promo-import-status'), promoTableBody: $('#promo-table-body'),
   proxySingleForm: $('#proxy-single-form'), proxyCountry: $('#proxy-country'), proxyUrl: $('#proxy-url'), proxySaveButton: $('#proxy-save-button'), proxySingleStatus: $('#proxy-single-status'), proxyBatchForm: $('#proxy-batch-form'), proxyBatch: $('#proxy-batch'), proxyBatchButton: $('#proxy-batch-button'), proxyBatchStatus: $('#proxy-batch-status'), proxyGrid: $('#proxy-grid'),
 };
 
@@ -18,8 +19,8 @@ const VIEW_META = {
 };
 const ERROR_MESSAGES = {
   admin_unauthorized: '管理员密码错误，请重新输入。', admin_not_configured: '后台密码尚未配置。', cdk_service_not_configured: 'CDK 服务尚未配置。', cdk_database_error: 'CDK 数据库操作失败。',
-  promo_service_not_configured: '优惠码加密服务尚未配置。', promo_database_error: '优惠码数据库操作失败。', invalid_promo_import: '导入内容无效或数量超过限制。', no_valid_promo_codes: '没有识别到有效的优惠码或 chatgpt.com/p 链接。', invalid_promo_country: '优惠码国家无效。', promo_inventory_insufficient: '优惠码库存不足，请先导入后再生成 CDK。', promo_not_found_or_assigned: '优惠码不存在或已经分配，无法删除。',
-  invalid_cdk_count: 'CDK 生成数量必须为 1–50。', invalid_cdk_max_uses: '可用次数参数无效。', invalid_cdk_expiry_days: '有效天数必须为 0–3650。', cdk_not_found_or_revoked: 'CDK 不存在或已停用。',
+  promo_service_not_configured: '优惠码加密服务尚未配置。', promo_database_error: '优惠码数据库操作失败。', invalid_promo_import: '导入内容无效或数量超过限制。', no_valid_promo_codes: '没有识别到有效的优惠码或 chatgpt.com/p 链接。', promo_inventory_insufficient: '优惠码库存不足，请先导入后再生成 CDK。', promo_not_found_or_assigned: '优惠码不存在或已经分配，无法删除。',
+  invalid_cdk_count: 'CDK 生成数量必须为 1–50。', cdk_not_found_or_revoked: 'CDK 不存在或已停用。',
   proxy_service_not_configured: '代理加密服务尚未配置。', proxy_database_error: '代理数据库操作失败。', invalid_proxy_import: '代理导入格式无效。', invalid_proxy_url: '代理 URL 格式不正确。', unsupported_proxy_protocol: '仅支持 HTTP / HTTPS 代理。', unsupported_country: '国家代码不受支持。', proxy_not_found: '该国家没有已导入的代理。', relay_not_configured: 'Relay 尚未配置。', relay_probe_unreachable: 'Relay 无法连接。', relay_probe_timeout: '代理测试超时。', proxy_test_failed: '代理测试失败。',
 };
 const STATE_LABELS = { active: '有效', exhausted: '已耗尽', expired: '已过期', revoked: '已停用', available: '可用', assigned: '已分配', healthy: '健康', failed: '异常', untested: '未测试' };
@@ -35,7 +36,6 @@ function node(tag, className = '', text = '') {
 function setStatus(element, message = '', type = '') { element.textContent = message; element.className = 'status' + (element === elements.globalStatus ? ' global-status' : '') + (type ? ' ' + type : ''); }
 function errorMessage(data, fallback = '操作失败，请稍后重试。') { return ERROR_MESSAGES[data?.error] || data?.reason || data?.message || fallback; }
 function formatDate(value, fallback = '长期') { if (!value) return fallback; const date = new Date(value); return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }); }
-function countryByCode(code) { return state.config?.countries.find((country) => country.code === code); }
 function setButtonLoading(button, loading, loadingText, idleText) { button.disabled = loading; button.textContent = loading ? loadingText : idleText; }
 
 async function adminFetch(path, options = {}) {
@@ -57,7 +57,7 @@ async function loadAllData() {
   populateCountrySelects(); renderAll();
 }
 
-function populateSelect(select, onlyPromo = false) {
+function populateSelect(select) {
   const current = select.value;
   select.replaceChildren();
   (state.config?.countries || []).forEach((country) => {
@@ -65,9 +65,8 @@ function populateSelect(select, onlyPromo = false) {
     option.value = country.code; select.append(option);
   });
   if ([...select.options].some((option) => option.value === current)) select.value = current;
-  else if (onlyPromo && [...select.options].some((option) => option.value === 'GB')) select.value = 'GB';
 }
-function populateCountrySelects() { populateSelect(elements.proxyCountry); populateSelect(elements.promoCountry, true); populateSelect(elements.cdkPromoCountry, true); }
+function populateCountrySelects() { populateSelect(elements.proxyCountry); }
 
 function renderAll() { renderOverview(); renderCdks(); renderPromos(); renderProxies(); renderServiceState(); }
 function renderServiceState() {
@@ -83,14 +82,12 @@ function renderOverview() {
   elements.overviewPromoAssigned.textContent = promoStats.assigned ?? 0; elements.overviewProxyReady.textContent = state.proxies.length; elements.overviewProxyTotal.textContent = `共 ${state.config?.countries?.length || 0} 个国家`;
   elements.navCdkCount.textContent = cdkStats.total ?? 0; elements.navPromoCount.textContent = promoStats.available ?? 0; elements.navProxyCount.textContent = state.proxies.length;
   elements.inventoryList.replaceChildren();
-  const groups = new Map();
-  state.promos.records.filter((record) => record.state === 'available').forEach((record) => groups.set(record.country, (groups.get(record.country) || 0) + 1));
-  if (!groups.size) elements.inventoryList.append(node('div', 'inventory-empty', '当前没有可用优惠码，请尽快导入。'));
-  [...groups.entries()].sort().forEach(([code, count]) => {
-    const country = countryByCode(code); const item = node('div', 'inventory-item');
-    item.append(node('span', '', country?.flag || '🌐'));
-    const copy = node('span'); copy.append(node('b', '', `${country?.name || code} · ${code}`), node('small', '', '可分配优惠码')); item.append(copy, node('strong', '', String(count))); elements.inventoryList.append(item);
-  });
+  const available = Number(promoStats.available || 0);
+  if (!available) elements.inventoryList.append(node('div', 'inventory-empty', '当前没有可用优惠码，请尽快导入。'));
+  else {
+    const item = node('div', 'inventory-item'); item.append(node('span', '', '🌐'));
+    const copy = node('span'); copy.append(node('b', '', '全球统一库存'), node('small', '', '所有国家的客户 CDK 共用')); item.append(copy, node('strong', '', String(available))); elements.inventoryList.append(item);
+  }
   updateInventoryHint();
 }
 
@@ -103,18 +100,19 @@ function renderCdks() {
   let records = state.cdks.records || [];
   if (state.cdkFilter === 'active') records = records.filter((record) => record.state === 'active');
   if (state.cdkFilter === 'inactive') records = records.filter((record) => record.state !== 'active');
-  if (!records.length) { emptyRow(elements.cdkTableBody, 7, '暂无符合条件的 CDK'); return; }
+  if (!records.length) { emptyRow(elements.cdkTableBody, 8, '暂无符合条件的 CDK'); return; }
   records.forEach((record) => {
-    const row = node('tr'); const code = node('code', '', record.maskedCode); const progress = node('div', 'progress'); const bar = node('span');
-    const fill = node('i'); fill.style.width = `${Math.min(100, Math.round((record.useCount / Math.max(1, record.maxUses)) * 100))}%`; bar.append(fill); progress.append(bar, node('small', '', `${record.useCount}/${record.maxUses}`));
+    const row = node('tr'); const code = node('code', '', record.maskedCode); const type = node('span', `cdk-kind cdk-kind-${record.kind}`, record.kind === 'admin' ? '管理员通用' : '客户'); const progress = node('div', 'progress');
+    if (record.unlimited) progress.append(node('small', '', `无限次 · 已用 ${record.useCount} 次`));
+    else { const bar = node('span'); const fill = node('i'); fill.style.width = `${Math.min(100, Math.round((record.useCount / Math.max(1, record.maxUses)) * 100))}%`; bar.append(fill); progress.append(bar, node('small', '', `${record.useCount}/${record.maxUses}`)); }
     const action = node('button', 'table-action', record.state === 'revoked' ? '已停用' : '停用'); action.type = 'button'; action.disabled = record.state === 'revoked'; action.addEventListener('click', () => revokeCdk(record));
-    row.append(tableCell(code), tableCell(record.label || '—'), tableCell(record.promoCode || '—'), tableCell(progress), tableCell(formatDate(record.expiresAt)), tableCell(stateBadge(record.state)), tableCell(action)); elements.cdkTableBody.append(row);
+    row.append(tableCell(code), tableCell(type), tableCell(record.label || '—'), tableCell(record.promoCode || '—'), tableCell(progress), tableCell(record.unlimited ? '长期' : formatDate(record.expiresAt)), tableCell(stateBadge(record.state)), tableCell(action)); elements.cdkTableBody.append(row);
   });
 }
 
 function updateInventoryHint() {
-  const country = elements.cdkPromoCountry.value || 'GB'; const available = state.promos.records.filter((record) => record.country === country && record.state === 'available').length;
-  elements.cdkInventoryHint.textContent = `当前可用 ${available} 条`; elements.cdkInventoryHint.style.color = available ? '' : '#bc3d3d';
+  const available = Number(state.promos.stats?.available || 0);
+  elements.cdkInventoryHint.textContent = String(available); elements.cdkInventoryHint.style.color = available ? '' : '#bc3d3d';
 }
 
 function deliveryText(bundle) { return `自助提链：${location.origin}/\nCDK：${bundle.code}\n优惠码：${bundle.promoCode}`; }
@@ -130,9 +128,9 @@ function renderIssued() {
 function renderPromos() {
   const stats = state.promos.stats || {}; elements.promoTotal.textContent = stats.total ?? 0; elements.promoAvailable.textContent = stats.available ?? 0; elements.promoAssigned.textContent = stats.assigned ?? 0;
   let records = state.promos.records || []; if (state.promoFilter !== 'all') records = records.filter((record) => record.state === state.promoFilter);
-  elements.promoTableBody.replaceChildren(); if (!records.length) { emptyRow(elements.promoTableBody, 7, '暂无符合条件的优惠码'); return; }
-  records.forEach((record) => { const row = node('tr'); const code = node('code', '', record.maskedCode); const country = countryByCode(record.country); const action = node('button', 'table-action', record.state === 'assigned' ? '已占用' : '删除'); action.type = 'button'; action.disabled = record.state === 'assigned'; action.addEventListener('click', () => deletePromo(record));
-    row.append(tableCell(code), tableCell(`${country?.flag || ''} ${country?.name || record.country}`), tableCell(record.batchName || '—'), tableCell(formatDate(record.importedAt, '—')), tableCell(record.assignedCdk || '—'), tableCell(stateBadge(record.state)), tableCell(action)); elements.promoTableBody.append(row); });
+  elements.promoTableBody.replaceChildren(); if (!records.length) { emptyRow(elements.promoTableBody, 6, '暂无符合条件的优惠码'); return; }
+  records.forEach((record) => { const row = node('tr'); const code = node('code', '', record.maskedCode); const action = node('button', 'table-action', record.state === 'assigned' ? '已占用' : '删除'); action.type = 'button'; action.disabled = record.state === 'assigned'; action.addEventListener('click', () => deletePromo(record));
+    row.append(tableCell(code), tableCell(record.batchName || '—'), tableCell(formatDate(record.importedAt, '—')), tableCell(record.assignedCdk || '—'), tableCell(stateBadge(record.state)), tableCell(action)); elements.promoTableBody.append(row); });
 }
 
 function renderProxies() {
@@ -159,8 +157,9 @@ elements.logoutButton.addEventListener('click', logout); elements.menuButton.add
 $$('.nav-item').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view))); $$('[data-open-view]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.openView)));
 elements.refreshButton.addEventListener('click', async () => { setButtonLoading(elements.refreshButton, true, '刷新中…', '刷新数据'); setStatus(elements.globalStatus, '正在刷新全部数据…', 'info'); try { await loadAllData(); setStatus(elements.globalStatus, '数据已刷新。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } finally { setButtonLoading(elements.refreshButton, false, '刷新中…', '刷新数据'); } });
 
-elements.cdkPromoCountry.addEventListener('change', updateInventoryHint);
-elements.cdkForm.addEventListener('submit', async (event) => { event.preventDefault(); setButtonLoading(elements.cdkCreateButton, true, '正在生成…', '生成并分配优惠码'); setStatus(elements.cdkCreateStatus, '正在原子分配优惠码并生成 CDK…', 'info'); try { const result = await adminFetch('/api/admin/cdks', { method: 'POST', body: JSON.stringify({ label: elements.cdkLabel.value.trim(), count: Number(elements.cdkCount.value), maxUses: Number(elements.cdkMaxUses.value), expiresDays: Number(elements.cdkExpiry.value), promoCountry: elements.cdkPromoCountry.value }) }); state.issued = result.codes || []; renderIssued(); setStatus(elements.cdkCreateStatus, `已生成 ${state.issued.length} 个 CDK，并完成优惠码分配。`, 'success'); await loadAllData(); } catch (error) { const data = error.data; const suffix = data?.error === 'promo_inventory_insufficient' ? `（需要 ${data.required}，当前 ${data.available}）` : ''; setStatus(elements.cdkCreateStatus, error.message + suffix, 'error'); } finally { setButtonLoading(elements.cdkCreateButton, false, '正在生成…', '生成并分配优惠码'); } });
+elements.cdkForm.addEventListener('submit', async (event) => { event.preventDefault(); setButtonLoading(elements.cdkCreateButton, true, '正在生成…', '生成并分配优惠码'); setStatus(elements.cdkCreateStatus, '正在原子分配优惠码并生成 CDK…', 'info'); try { const result = await adminFetch('/api/admin/cdks', { method: 'POST', body: JSON.stringify({ label: elements.cdkLabel.value.trim(), count: Number(elements.cdkCount.value) }) }); state.issued = result.codes || []; renderIssued(); setStatus(elements.cdkCreateStatus, `已生成 ${state.issued.length} 个 CDK，每条可用 1 次、24 小时有效。`, 'success'); await loadAllData(); } catch (error) { const data = error.data; const suffix = data?.error === 'promo_inventory_insufficient' ? `（需要 ${data.required}，当前 ${data.available}）` : ''; setStatus(elements.cdkCreateStatus, error.message + suffix, 'error'); } finally { setButtonLoading(elements.cdkCreateButton, false, '正在生成…', '生成并分配优惠码'); } });
+elements.adminCdkCreate.addEventListener('click', async () => { setButtonLoading(elements.adminCdkCreate, true, '正在生成…', '生成管理员通用 CDK'); setStatus(elements.adminCdkStatus, '正在生成新的管理员通用 CDK…', 'info'); elements.adminCdkResult.hidden = true; try { const result = await adminFetch('/api/admin/cdks/universal', { method: 'POST', body: '{}' }); const code = result.code?.code || ''; elements.adminCdkCode.textContent = code; elements.adminCdkResult.hidden = !code; setStatus(elements.adminCdkStatus, '新管理员 CDK 已生成，旧管理员 CDK 已自动停用。', 'success'); await loadAllData(); } catch (error) { setStatus(elements.adminCdkStatus, error.message, 'error'); } finally { setButtonLoading(elements.adminCdkCreate, false, '正在生成…', '生成管理员通用 CDK'); } });
+elements.adminCdkCopy.addEventListener('click', () => copyText(elements.adminCdkCode.textContent, elements.adminCdkCopy));
 elements.copyAllBundles.addEventListener('click', () => copyText(state.issued.map(deliveryText).join('\n\n'), elements.copyAllBundles));
 $$('[data-cdk-filter]').forEach((button) => button.addEventListener('click', () => { state.cdkFilter = button.dataset.cdkFilter; $$('[data-cdk-filter]').forEach((item) => item.classList.toggle('active', item === button)); renderCdks(); }));
 async function revokeCdk(record) { if (!confirm(`确定停用 ${record.maskedCode} 吗？此操作不会回收已分配的优惠码。`)) return; try { await adminFetch(`/api/admin/cdks/${record.id}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, 'CDK 已停用。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
@@ -175,7 +174,7 @@ async function codesFromFile(file) {
 }
 elements.promoFile.addEventListener('change', async () => { const file = elements.promoFile.files?.[0]; state.fileCodes = []; if (!file) return; elements.promoFileLabel.textContent = `正在读取 ${file.name}…`; try { state.fileCodes = await codesFromFile(file); elements.promoFileLabel.textContent = `${file.name} · 识别到 ${state.fileCodes.length} 个非空单元格`; elements.clearPromoFile.hidden = false; setStatus(elements.promoImportStatus, '文件读取完成，点击“导入优惠码”写入库存。', 'success'); } catch (error) { elements.promoFile.value = ''; elements.promoFileLabel.textContent = '将读取所有非空单元格'; setStatus(elements.promoImportStatus, error.message, 'error'); } });
 elements.clearPromoFile.addEventListener('click', () => { elements.promoFile.value = ''; state.fileCodes = []; elements.clearPromoFile.hidden = true; elements.promoFileLabel.textContent = '将读取所有非空单元格'; });
-elements.promoForm.addEventListener('submit', async (event) => { event.preventDefault(); const codes = [...splitTextCodes(elements.promoText.value), ...state.fileCodes]; if (!codes.length) { setStatus(elements.promoImportStatus, '请粘贴优惠码或选择文件。', 'error'); return; } setButtonLoading(elements.promoImportButton, true, '正在导入…', '导入优惠码'); setStatus(elements.promoImportStatus, `正在校验并加密 ${codes.length} 条数据…`, 'info'); try { const result = await adminFetch('/api/admin/promos', { method: 'POST', body: JSON.stringify({ country: elements.promoCountry.value, batchName: elements.promoBatch.value.trim(), codes }) }); setStatus(elements.promoImportStatus, `导入完成：新增 ${result.importedCount}，重复 ${result.duplicateCount}，无效 ${result.invalidCount}。`, 'success'); elements.promoText.value = ''; elements.clearPromoFile.click(); await loadAllData(); } catch (error) { setStatus(elements.promoImportStatus, error.message, 'error'); } finally { setButtonLoading(elements.promoImportButton, false, '正在导入…', '导入优惠码'); } });
+elements.promoForm.addEventListener('submit', async (event) => { event.preventDefault(); const codes = [...splitTextCodes(elements.promoText.value), ...state.fileCodes]; if (!codes.length) { setStatus(elements.promoImportStatus, '请粘贴优惠码或选择文件。', 'error'); return; } setButtonLoading(elements.promoImportButton, true, '正在导入…', '导入优惠码'); setStatus(elements.promoImportStatus, `正在校验并加密 ${codes.length} 条数据…`, 'info'); try { const result = await adminFetch('/api/admin/promos', { method: 'POST', body: JSON.stringify({ batchName: elements.promoBatch.value.trim(), codes }) }); setStatus(elements.promoImportStatus, `导入完成：新增 ${result.importedCount}，重复 ${result.duplicateCount}，无效 ${result.invalidCount}。`, 'success'); elements.promoText.value = ''; elements.clearPromoFile.click(); await loadAllData(); } catch (error) { setStatus(elements.promoImportStatus, error.message, 'error'); } finally { setButtonLoading(elements.promoImportButton, false, '正在导入…', '导入优惠码'); } });
 $$('[data-promo-filter]').forEach((button) => button.addEventListener('click', () => { state.promoFilter = button.dataset.promoFilter; $$('[data-promo-filter]').forEach((item) => item.classList.toggle('active', item === button)); renderPromos(); }));
 async function deletePromo(record) { if (!confirm(`确定删除未分配优惠码 ${record.maskedCode} 吗？`)) return; try { await adminFetch(`/api/admin/promos/${record.id}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, '优惠码已从可用库存删除。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 

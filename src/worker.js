@@ -1,4 +1,4 @@
-import { createCdks, listCdks, revokeCdk, verifyCdk } from './cdk.js';
+import { createAdminCdk, createCdks, listCdks, revokeCdk, verifyCdk } from './cdk.js';
 import {
   deleteProxyRoute,
   getProxyRoute,
@@ -403,6 +403,8 @@ async function handleCdkVerify(request, env) {
     {
       ok: true,
       label: result.label,
+      kind: result.kind,
+      unlimited: result.unlimited,
       maxUses: result.maxUses,
       useCount: result.useCount,
       remainingUses: result.remainingUses,
@@ -412,6 +414,25 @@ async function handleCdkVerify(request, env) {
     { 'Cache-Control': 'no-store' },
     env
   );
+}
+
+async function handleAdminUniversalCdk(request, env) {
+  const authorization = adminAuthorization(request, env);
+  if (!authorization.ok) {
+    return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
+  }
+  if (request.method !== 'POST') {
+    return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
+  }
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
+  }
+  const result = await safeCdkOperation(() => createAdminCdk(body, env));
+  if (!result.ok) return cdkFailureResponse(result, env);
+  return jsonResponse(result, 201, { 'Cache-Control': 'no-store' }, env);
 }
 
 async function handleAdminCdks(request, env) {
@@ -462,7 +483,6 @@ async function handleAdminPromos(request, env) {
     const url = new URL(request.url);
     const result = await safePromoOperation(() => listPromoCodes(env, {
       limit: url.searchParams.get('limit') || 500,
-      country: url.searchParams.get('country') || '',
     }));
     if (!result.ok) return promoFailureResponse(result, env);
     return jsonResponse(result, 200, { 'Cache-Control': 'no-store' }, env);
@@ -996,6 +1016,9 @@ export default {
     }
     if (url.pathname === '/api/admin/cdks' && ['GET', 'POST'].includes(request.method)) {
       return handleAdminCdks(request, env);
+    }
+    if (url.pathname === '/api/admin/cdks/universal') {
+      return handleAdminUniversalCdk(request, env);
     }
     const adminCdkMatch = /^\/api\/admin\/cdks\/(\d+)$/.exec(url.pathname);
     if (adminCdkMatch) return handleAdminCdkItem(request, env, adminCdkMatch[1]);

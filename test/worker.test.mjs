@@ -17,9 +17,8 @@ class MemoryStatement {
 
   async first() {
     if (this.query.includes('SELECT COUNT(*) AS available') && this.query.includes('FROM promo_codes p')) {
-      const country = this.values[0];
       const available = this.database.promoRows.filter((row) =>
-        row.country === country && !row.deleted_at &&
+        !row.deleted_at &&
         !this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id)
       ).length;
       return { available };
@@ -89,10 +88,10 @@ class MemoryStatement {
     }
 
     if (this.query.startsWith('INSERT INTO cdk_promo_assignments')) {
-      const [codeHash, country, assignedAt] = this.values;
+      const [codeHash, assignedAt] = this.values;
       const cdk = this.database.rows.find((row) => row.code_hash === codeHash);
       const promo = this.database.promoRows
-        .filter((row) => row.country === country && !row.deleted_at && !this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id))
+        .filter((row) => !row.deleted_at && !this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id))
         .sort((left, right) => left.id - right.id)[0];
       if (!cdk || !promo || this.database.assignmentRows.some((row) => row.cdk_id === cdk.id)) return { meta: { changes: 0 } };
       this.database.assignmentRows.push({ cdk_id: cdk.id, promo_code_id: promo.id, assigned_at: assignedAt });
@@ -150,17 +149,19 @@ class MemoryStatement {
     }
 
     if (this.query.startsWith('INSERT INTO cdks')) {
-      const [codeHash, codeSuffix, label, maxUses, createdAt, expiresAt] = this.values;
+      const admin = this.query.includes("'admin'");
+      const [codeHash, codeSuffix, label, createdAt, expiresAt] = this.values;
       const id = this.database.nextId++;
       this.database.rows.push({
         id,
         code_hash: codeHash,
         code_suffix: codeSuffix,
         label,
-        max_uses: maxUses,
+        kind: admin ? 'admin' : 'standard',
+        max_uses: 1,
         use_count: 0,
         created_at: createdAt,
-        expires_at: expiresAt,
+        expires_at: admin ? null : expiresAt,
         revoked_at: null,
         last_used_at: null,
       });
@@ -170,15 +171,28 @@ class MemoryStatement {
     if (this.query.includes('SET use_count = use_count + 1')) {
       const [now, id] = this.values;
       const row = this.database.rows.find((item) => item.id === Number(id));
-      const active = row && !row.revoked_at && (!row.expires_at || row.expires_at > now) && row.use_count < row.max_uses;
+      const active = row && row.kind === 'standard' && !row.revoked_at && row.expires_at > now && row.use_count < row.max_uses;
       if (!active) return { meta: { changes: 0 } };
       row.use_count += 1;
       row.last_used_at = now;
       return { meta: { changes: 1 } };
     }
 
+    if (this.query.includes('SET last_used_at = ?1') && this.query.includes("kind = 'admin'")) {
+      const [now, id] = this.values;
+      const row = this.database.rows.find((item) => item.id === Number(id) && item.kind === 'admin' && !item.revoked_at);
+      if (!row) return { meta: { changes: 0 } };
+      row.last_used_at = now;
+      return { meta: { changes: 1 } };
+    }
+
     if (this.query.includes('SET revoked_at = ?1')) {
       const [revokedAt, id] = this.values;
+      if (this.query.includes("WHERE kind = 'admin'")) {
+        const rows = this.database.rows.filter((item) => item.kind === 'admin' && !item.revoked_at);
+        rows.forEach((row) => { row.revoked_at = revokedAt; });
+        return { meta: { changes: rows.length } };
+      }
       const row = this.database.rows.find((item) => item.id === Number(id) && !item.revoked_at);
       if (!row) return { meta: { changes: 0 } };
       row.revoked_at = revokedAt;
@@ -239,12 +253,10 @@ async function adminRequest(env, path, options = {}) {
 
 async function issueCdk(env, overrides = {}) {
   const count = Number(overrides.count || 1);
-  const promoCountry = String(overrides.promoCountry || 'GB');
   const promoResponse = await adminRequest(env, '/api/admin/promos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      country: promoCountry,
       batchName: 'test inventory',
       codes: Array.from({ length: count }, (_, index) =>
         `https://chatgpt.com/p/TEST${String(env.DB.nextPromoId + index).padStart(12, '0')}`
@@ -255,7 +267,7 @@ async function issueCdk(env, overrides = {}) {
   const response = await adminRequest(env, '/api/admin/cdks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ count: 1, maxUses: 3, expiresDays: 30, label: 'test', promoCountry, ...overrides }),
+    body: JSON.stringify({ count: 1, label: 'test', ...overrides }),
   });
   assert.equal(response.status, 201);
   return (await response.json()).codes[0];
@@ -345,19 +357,21 @@ test('admin batch import saves multiple country routes atomically', async () => 
   assert.equal(env.DB.proxyRows.every((row) => row.encrypted_url.startsWith('v1.')), true);
 });
 
-test('admin imports promo links encrypted and never lists plaintext', async () => {
+test('admin normalizes promo links into encrypted global codes and never lists plaintext', async () => {
   const env = createEnv();
   const promo = 'chatgpt.com/p/E3NW9QBJZXKNM9ZE';
   const importResponse = await adminRequest(env, '/api/admin/promos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ country: 'GB', batchName: 'GB-promo code', codes: [promo, promo] }),
+    body: JSON.stringify({ batchName: 'global-promo-code', codes: [promo, promo] }),
   });
   const imported = await importResponse.json();
 
   assert.equal(importResponse.status, 201);
   assert.equal(imported.importedCount, 1);
+  assert.equal(imported.scope, 'global');
   assert.equal(env.DB.promoRows.length, 1);
+  assert.equal(env.DB.promoRows[0].country, 'GLOBAL');
   assert.match(env.DB.promoRows[0].encrypted_code, /^v1\./);
   assert.equal(env.DB.promoRows[0].encrypted_code.includes('E3NW9QBJZXKNM9ZE'), false);
 
@@ -370,35 +384,38 @@ test('admin imports promo links encrypted and never lists plaintext', async () =
   assert.equal('encrypted_code' in list.records[0], false);
 });
 
-test('CDK generation atomically assigns distinct promo links and exposes plaintext once', async () => {
+test('CDK generation atomically assigns distinct global promo codes and exposes plaintext once', async () => {
   const env = createEnv();
   const promos = [
-    'https://chatgpt.com/p/AAAAAAAAAAAAAAA1',
-    'https://chatgpt.com/p/AAAAAAAAAAAAAAA2',
+    'AAAAAAAAAAAAAAA1',
+    'AAAAAAAAAAAAAAA2',
   ];
   const importResponse = await adminRequest(env, '/api/admin/promos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ country: 'GB', batchName: 'assignment', codes: promos }),
+    body: JSON.stringify({ batchName: 'assignment', codes: promos }),
   });
   assert.equal(importResponse.status, 201);
 
   const issueResponse = await adminRequest(env, '/api/admin/cdks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ count: 2, maxUses: 3, expiresDays: 30, promoCountry: 'GB' }),
+    body: JSON.stringify({ count: 2, maxUses: 99, expiresDays: 365 }),
   });
   const issueText = await issueResponse.text();
   const issued = JSON.parse(issueText);
   assert.equal(issueResponse.status, 201);
   assert.equal(new Set(issued.codes.map((record) => record.promoCode)).size, 2);
   assert.deepEqual(new Set(issued.codes.map((record) => record.promoCode)), new Set(promos));
+  assert.equal(issued.codes.every((record) => record.maxUses === 1), true);
+  assert.equal(issued.codes.every((record) => new Date(record.expiresAt) - new Date(env.DB.rows[0].created_at) === 24 * 60 * 60 * 1_000), true);
   assert.equal(env.DB.assignmentRows.length, 2);
 
   const listResponse = await adminRequest(env, '/api/admin/cdks?limit=20');
   const listText = await listResponse.text();
   const list = JSON.parse(listText);
-  assert.equal(list.records.every((record) => record.promoCountry === 'GB'), true);
+  assert.equal(list.records.every((record) => record.kind === 'standard'), true);
+  assert.equal(list.records.every((record) => record.maxUses === 1), true);
   assert.equal(listText.includes('AAAAAAAAAAAAAAA1'), false);
   assert.equal(listText.includes('AAAAAAAAAAAAAAA2'), false);
 });
@@ -408,7 +425,7 @@ test('CDK generation fails without partially creating records when promo invento
   const response = await adminRequest(env, '/api/admin/cdks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ count: 2, maxUses: 3, expiresDays: 30, promoCountry: 'GB' }),
+    body: JSON.stringify({ count: 2 }),
   });
   const data = await response.json();
 
@@ -421,7 +438,7 @@ test('CDK generation fails without partially creating records when promo invento
 
 test('admin can issue, list and revoke a CDK without persisting plaintext', async () => {
   const env = createEnv();
-  const issued = await issueCdk(env, { maxUses: 5, label: '客户 A' });
+  const issued = await issueCdk(env, { label: '客户 A' });
   assert.match(issued.code, /^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/);
 
   const listResponse = await adminRequest(env, '/api/admin/cdks?limit=20');
@@ -455,9 +472,80 @@ test('CDK verification does not consume a use', async () => {
   const data = await response.json();
 
   assert.equal(response.status, 200);
-  assert.equal(data.remainingUses, 3);
+  assert.equal(data.kind, 'standard');
+  assert.equal(data.unlimited, false);
+  assert.equal(data.remainingUses, 1);
   assert.equal(env.DB.rows[0].use_count, 0);
   assert.equal('code' in data, false);
+});
+
+test('admin universal CDK is reusable, consumes no promo and rotates the previous code', async () => {
+  const env = createEnv();
+  const firstResponse = await adminRequest(env, '/api/admin/cdks/universal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  const first = (await firstResponse.json()).code;
+  assert.equal(firstResponse.status, 201);
+  assert.equal(first.kind, 'admin');
+  assert.equal(first.unlimited, true);
+  assert.equal(first.promoCode, '');
+  assert.equal(env.DB.assignmentRows.length, 0);
+
+  const originalFetch = globalThis.fetch;
+  let checkoutCalls = 0;
+  globalThis.fetch = async () => {
+    checkoutCalls += 1;
+    return new Response(JSON.stringify({ checkout_session_id: `oaics_admin_${checkoutCalls}` }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cdk: first.code,
+          accessToken: 'eyJ' + 'z'.repeat(80),
+          country: 'US',
+          seatQuantity: 2,
+        }),
+      }), env);
+      const data = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(data.cdkRemainingUses, null);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(checkoutCalls, 2);
+  assert.equal(env.DB.rows[0].use_count, 0);
+  assert.ok(env.DB.rows[0].last_used_at);
+
+  const secondResponse = await adminRequest(env, '/api/admin/cdks/universal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  const second = (await secondResponse.json()).code;
+  assert.equal(secondResponse.status, 201);
+  assert.notEqual(second.code, first.code);
+  assert.ok(env.DB.rows[0].revoked_at);
+  assert.equal(env.DB.rows[1].revoked_at, null);
+
+  const oldVerify = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cdk: first.code }),
+  }), env);
+  const newVerify = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cdk: second.code }),
+  }), env);
+  assert.equal(oldVerify.status, 403);
+  assert.equal((await oldVerify.json()).error, 'cdk_revoked');
+  assert.equal(newVerify.status, 200);
+  assert.equal((await newVerify.json()).unlimited, true);
 });
 
 test('checkout consumes CDK once, uses selected relay and enforces server currency', async () => {
@@ -502,7 +590,7 @@ test('checkout consumes CDK once, uses selected relay and enforces server curren
     assert.equal(data.ok, true);
     assert.equal(data.proxyUsed, true);
     assert.equal(data.currency, 'USD');
-    assert.equal(data.cdkRemainingUses, 2);
+    assert.equal(data.cdkRemainingUses, 0);
     assert.equal(env.DB.rows[0].use_count, 1);
     assert.equal(capturedUrl, relayUrl);
     assert.equal(capturedInit.headers.Authorization, 'Bearer ' + relayToken);
@@ -520,6 +608,22 @@ test('checkout consumes CDK once, uses selected relay and enforces server curren
     assert.equal(data.seatProlite, 1);
     assert.equal(data.seatQuantity, 2);
     assert.equal(data.billingPeriod, 'year');
+
+    const secondResponse = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cdk: issued.code,
+        accessToken: 'eyJ' + 'a'.repeat(80),
+        country: 'US',
+        seatDefault: 1,
+        seatProlite: 1,
+        billingPeriod: 'year',
+      }),
+    }), env);
+    assert.equal(secondResponse.status, 403);
+    assert.equal((await secondResponse.json()).error, 'cdk_exhausted');
+    assert.equal(env.DB.rows[0].use_count, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

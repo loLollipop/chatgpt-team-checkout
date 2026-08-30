@@ -4,13 +4,13 @@ const CDK_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CDK_GROUPS = 4;
 const CDK_GROUP_LENGTH = 4;
 const MAX_BATCH_SIZE = 50;
-const MAX_CDK_USES = 100_000;
-const MAX_EXPIRY_DAYS = 3_650;
+const STANDARD_CDK_MAX_USES = 1;
+const STANDARD_CDK_LIFETIME_MS = 24 * 60 * 60 * 1_000;
+const CDK_KIND_STANDARD = 'standard';
+const CDK_KIND_ADMIN = 'admin';
 
 export function normalizeCdk(value) {
-  const compact = String(value || '')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '');
+  const compact = String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (compact.length !== CDK_GROUPS * CDK_GROUP_LENGTH) return '';
   const groups = [];
   for (let index = 0; index < compact.length; index += CDK_GROUP_LENGTH) {
@@ -40,38 +40,41 @@ function parsePositiveInteger(value, fallback, maximum) {
   return Number.isInteger(parsed) && parsed > 0 && parsed <= maximum ? parsed : null;
 }
 
-function parseExpiryDays(value) {
-  const parsed = Number(value == null || value === '' ? 30 : value);
-  return Number.isInteger(parsed) && parsed >= 0 && parsed <= MAX_EXPIRY_DAYS ? parsed : null;
-}
-
 function databaseReady(env) {
   return Boolean(env?.DB && env?.CDK_HASH_PEPPER);
 }
 
+function rowKind(row) {
+  return row?.kind === CDK_KIND_ADMIN ? CDK_KIND_ADMIN : CDK_KIND_STANDARD;
+}
+
 function recordState(row, now = new Date()) {
   if (row.revoked_at) return 'revoked';
+  if (rowKind(row) === CDK_KIND_ADMIN) return 'active';
   if (row.expires_at && new Date(row.expires_at) <= now) return 'expired';
   if (Number(row.use_count) >= Number(row.max_uses)) return 'exhausted';
   return 'active';
 }
 
 function publicRecord(row, now = new Date()) {
+  const kind = rowKind(row);
   const maxUses = Number(row.max_uses);
   const useCount = Number(row.use_count);
+  const unlimited = kind === CDK_KIND_ADMIN;
   return {
     id: Number(row.id),
     maskedCode: '••••-••••-••••-' + row.code_suffix,
     label: row.label || '',
-    maxUses,
+    kind,
+    unlimited,
+    maxUses: unlimited ? null : maxUses,
     useCount,
-    remainingUses: Math.max(0, maxUses - useCount),
+    remainingUses: unlimited ? null : Math.max(0, maxUses - useCount),
     createdAt: row.created_at,
-    expiresAt: row.expires_at || '',
+    expiresAt: unlimited ? '' : (row.expires_at || ''),
     revokedAt: row.revoked_at || '',
     lastUsedAt: row.last_used_at || '',
-    promoCountry: row.promo_country || '',
-    promoCode: row.promo_suffix ? 'chatgpt.com/p/••••••' + row.promo_suffix : '',
+    promoCode: row.promo_suffix ? '••••••' + row.promo_suffix : '',
     state: recordState(row, now),
   };
 }
@@ -89,12 +92,17 @@ function resultFromRecord(row, now = new Date()) {
     ok: true,
     id: record.id,
     label: record.label,
+    kind: record.kind,
+    unlimited: record.unlimited,
     maxUses: record.maxUses,
     useCount: record.useCount,
     remainingUses: record.remainingUses,
     expiresAt: record.expiresAt,
   };
 }
+
+const CDK_SELECT_COLUMNS = `id, code_suffix, label, kind, max_uses, use_count,
+  created_at, expires_at, revoked_at, last_used_at`;
 
 export async function verifyCdk(value, env, options = {}) {
   if (!databaseReady(env)) return unavailableResult();
@@ -104,63 +112,52 @@ export async function verifyCdk(value, env, options = {}) {
   const now = new Date();
   const nowIso = now.toISOString();
   const row = await env.DB.prepare(
-    `SELECT id, code_suffix, label, max_uses, use_count, created_at, expires_at, revoked_at, last_used_at
-     FROM cdks WHERE code_hash = ?1 LIMIT 1`
+    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks WHERE code_hash = ?1 LIMIT 1`
   ).bind(codeHash).first();
   const current = resultFromRecord(row, now);
   if (!current.ok || !options.consume) return current;
 
-  const update = await env.DB.prepare(
-    `UPDATE cdks
-     SET use_count = use_count + 1, last_used_at = ?1
-     WHERE id = ?2
-       AND revoked_at IS NULL
-       AND (expires_at IS NULL OR expires_at > ?1)
-       AND use_count < max_uses`
-  ).bind(nowIso, row.id).run();
-  if (Number(update?.meta?.changes || 0) !== 1) {
-    const latest = await env.DB.prepare(
-      `SELECT id, code_suffix, label, max_uses, use_count, created_at, expires_at, revoked_at, last_used_at
-       FROM cdks WHERE id = ?1 LIMIT 1`
-    ).bind(row.id).first();
-    return resultFromRecord(latest, new Date());
+  if (current.unlimited) {
+    const update = await env.DB.prepare(
+      `UPDATE cdks SET last_used_at = ?1
+       WHERE id = ?2 AND kind = 'admin' AND revoked_at IS NULL`
+    ).bind(nowIso, row.id).run();
+    if (Number(update?.meta?.changes || 0) === 1) return current;
+  } else {
+    const update = await env.DB.prepare(
+      `UPDATE cdks
+       SET use_count = use_count + 1, last_used_at = ?1
+       WHERE id = ?2
+         AND kind = 'standard'
+         AND revoked_at IS NULL
+         AND expires_at > ?1
+         AND use_count < max_uses`
+    ).bind(nowIso, row.id).run();
+    if (Number(update?.meta?.changes || 0) === 1) {
+      return { ...current, useCount: current.useCount + 1, remainingUses: 0 };
+    }
   }
 
-  return {
-    ...current,
-    useCount: current.useCount + 1,
-    remainingUses: Math.max(0, current.remainingUses - 1),
-  };
+  const latest = await env.DB.prepare(
+    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks WHERE id = ?1 LIMIT 1`
+  ).bind(row.id).first();
+  return resultFromRecord(latest, new Date());
 }
 
 export async function createCdks(input, env) {
   if (!databaseReady(env)) return unavailableResult();
   const count = parsePositiveInteger(input?.count, 1, MAX_BATCH_SIZE);
-  const maxUses = parsePositiveInteger(input?.maxUses, 10, MAX_CDK_USES);
-  const expiresDays = parseExpiryDays(input?.expiresDays);
   if (count == null) return { ok: false, error: 'invalid_cdk_count', max: MAX_BATCH_SIZE };
-  if (maxUses == null) return { ok: false, error: 'invalid_cdk_max_uses', max: MAX_CDK_USES };
-  if (expiresDays == null) return { ok: false, error: 'invalid_cdk_expiry_days', max: MAX_EXPIRY_DAYS };
 
-  const promoCountry = String(input?.promoCountry || 'GB').trim().toUpperCase();
-  if (!/^[A-Z]{2}$/.test(promoCountry)) return { ok: false, error: 'invalid_promo_country' };
-  const inventory = await availablePromoCount(promoCountry, env);
+  const inventory = await availablePromoCount(env);
   if (!inventory.ok) return inventory;
   if (inventory.available < count) {
-    return {
-      ok: false,
-      error: 'promo_inventory_insufficient',
-      country: promoCountry,
-      available: inventory.available,
-      required: count,
-    };
+    return { ok: false, error: 'promo_inventory_insufficient', available: inventory.available, required: count };
   }
 
   const label = String(input?.label || '').trim().slice(0, 80);
   const createdAt = new Date().toISOString();
-  const expiresAt = expiresDays === 0
-    ? null
-    : new Date(Date.now() + expiresDays * 86_400_000).toISOString();
+  const expiresAt = new Date(new Date(createdAt).getTime() + STANDARD_CDK_LIFETIME_MS).toISOString();
   const generated = [];
   const statements = [];
 
@@ -171,9 +168,9 @@ export async function createCdks(input, env) {
     statements.push(
       env.DB.prepare(
         `INSERT INTO cdks
-         (code_hash, code_suffix, label, max_uses, use_count, created_at, expires_at)
-         VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)`
-      ).bind(codeHash, code.slice(-4), label, maxUses, createdAt, expiresAt)
+         (code_hash, code_suffix, label, kind, max_uses, use_count, created_at, expires_at)
+         VALUES (?1, ?2, ?3, 'standard', 1, 0, ?4, ?5)`
+      ).bind(codeHash, code.slice(-4), label, createdAt, expiresAt)
     );
     statements.push(
       env.DB.prepare(
@@ -182,15 +179,15 @@ export async function createCdks(input, env) {
            (SELECT id FROM cdks WHERE code_hash = ?1 LIMIT 1),
            (
              SELECT p.id FROM promo_codes p
-             WHERE p.country = ?2 AND p.deleted_at IS NULL
+             WHERE p.deleted_at IS NULL
                AND NOT EXISTS (
                  SELECT 1 FROM cdk_promo_assignments a WHERE a.promo_code_id = p.id
                )
              ORDER BY p.id ASC LIMIT 1
            ),
-           ?3
+           ?2
          )`
-      ).bind(codeHash, promoCountry, createdAt)
+      ).bind(codeHash, createdAt)
     );
   }
 
@@ -204,11 +201,43 @@ export async function createCdks(input, env) {
       id: Number(insertResults[index * 2]?.meta?.last_row_id || assignments[index].cdkId || 0),
       code: item.code,
       label,
-      maxUses,
-      expiresAt: expiresAt || '',
+      kind: CDK_KIND_STANDARD,
+      unlimited: false,
+      maxUses: STANDARD_CDK_MAX_USES,
+      expiresAt,
       promoCode: assignments[index].promoCode,
-      promoCountry: assignments[index].country,
     })),
+  };
+}
+
+export async function createAdminCdk(input, env) {
+  if (!databaseReady(env)) return unavailableResult();
+  const code = randomCdk();
+  const codeHash = await hashCdk(code, env.CDK_HASH_PEPPER);
+  const label = String(input?.label || '管理员通用 CDK').trim().slice(0, 80) || '管理员通用 CDK';
+  const createdAt = new Date().toISOString();
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE cdks SET revoked_at = ?1 WHERE kind = 'admin' AND revoked_at IS NULL`
+    ).bind(createdAt),
+    env.DB.prepare(
+      `INSERT INTO cdks
+       (code_hash, code_suffix, label, kind, max_uses, use_count, created_at, expires_at)
+       VALUES (?1, ?2, ?3, 'admin', 1, 0, ?4, NULL)`
+    ).bind(codeHash, code.slice(-4), label, createdAt),
+  ]);
+  return {
+    ok: true,
+    code: {
+      id: Number(results[1]?.meta?.last_row_id || 0),
+      code,
+      label,
+      kind: CDK_KIND_ADMIN,
+      unlimited: true,
+      maxUses: null,
+      expiresAt: '',
+      promoCode: '',
+    },
   };
 }
 
@@ -216,8 +245,8 @@ export async function listCdks(env, limitValue = 200) {
   if (!databaseReady(env)) return unavailableResult();
   const limit = parsePositiveInteger(limitValue, 200, 500) || 200;
   const result = await env.DB.prepare(
-    `SELECT c.id, c.code_suffix, c.label, c.max_uses, c.use_count, c.created_at, c.expires_at,
-            c.revoked_at, c.last_used_at, p.country AS promo_country, p.code_suffix AS promo_suffix
+    `SELECT c.id, c.code_suffix, c.label, c.kind, c.max_uses, c.use_count, c.created_at,
+            c.expires_at, c.revoked_at, c.last_used_at, p.code_suffix AS promo_suffix
      FROM cdks c
      LEFT JOIN cdk_promo_assignments a ON a.cdk_id = c.id
      LEFT JOIN promo_codes p ON p.id = a.promo_code_id
@@ -232,9 +261,10 @@ export async function listCdks(env, limitValue = 200) {
       (stats, record) => {
         stats.total += 1;
         stats[record.state] += 1;
+        stats[record.kind] += 1;
         return stats;
       },
-      { total: 0, active: 0, exhausted: 0, expired: 0, revoked: 0 }
+      { total: 0, active: 0, exhausted: 0, expired: 0, revoked: 0, standard: 0, admin: 0 }
     ),
   };
 }

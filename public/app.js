@@ -281,6 +281,12 @@ function setLoading(button, loading, labelElement, loadingText, idleText) {
 function unlockWorkbench(verification) {
   elements.gateView.hidden = true;
   elements.workbench.hidden = false;
+  if (verification.unlimited || verification.kind === 'admin') {
+    elements.cdkRemaining.textContent = '管理员通用 · 长期有效';
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    setTimeout(() => elements.accessToken.focus(), 80);
+    return;
+  }
   const expiry = verification.expiresAt ? ` · ${new Date(verification.expiresAt).toLocaleDateString('zh-CN')} 到期` : '';
   elements.cdkRemaining.textContent = `剩余 ${verification.remainingUses} 次${expiry}`;
   window.scrollTo({ top: 0, behavior: 'instant' });
@@ -417,7 +423,7 @@ elements.form.addEventListener('submit', async (event) => {
     elements.resultUrl.value = data.url;
     elements.openResult.href = data.url;
     elements.resultCard.hidden = false;
-    elements.cdkRemaining.textContent = `剩余 ${data.cdkRemainingUses} 次`;
+    elements.cdkRemaining.textContent = data.cdkRemainingUses == null ? '管理员通用 · 长期有效' : `剩余 ${data.cdkRemainingUses} 次`;
     setStatus(elements.formStatus, '支付长链已生成。', 'success');
     elements.resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (error) {

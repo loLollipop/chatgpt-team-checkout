@@ -5,9 +5,11 @@
 ## 已实现功能
 
 - 页面首次打开只显示 CDK 验证入口，验证通过后才会进入正式工作台。
-- Checkout API 会再次验证 CDK 并原子扣减一次使用次数，不能绕过前端。
+- 客户 CDK 生成后 24 小时有效、仅可成功提链 1 次；Checkout API 在服务端原子核销。
+- 支持长期有效、可重复使用的管理员通用 CDK；重新生成时自动停用旧码。
 - `/admin` 管理后台按概览、CDK、优惠码、国家代理分类。
-- 优惠码支持 Excel、CSV、TXT 和粘贴导入；生成 CDK 时从指定国家库存原子分配一条优惠码。
+- 优惠码支持 Excel、CSV、TXT 和粘贴导入；所有国家共用全球库存，生成客户 CDK 时原子分配一条。
+- 兼容导入完整 `chatgpt.com/p/...` 链接，存储与交付时只保留 `/p/` 后的优惠码。
 - 生成结果可直接复制“自助提链 / CDK / 优惠码”三行交付文本。
 - CDK 明文只在生成时返回一次，D1 只保存 `SHA-256(Pepper + CDK)` 和末四位。
 - 国家下拉支持美国、埃及、英国、智利、菲律宾、日本、泰国、印度、瑞典，并显示国旗、当地币种与美元参考价。
@@ -65,7 +67,7 @@ npx wrangler secret put PROMO_ENCRYPTION_KEY
 - `ADMIN_TOKEN`：登录 `/admin` 管理后台使用。
 - `CDK_HASH_PEPPER`：参与 CDK 哈希，不得与 ADMIN_TOKEN 相同，设置后不要随意更换；更换会使已有 CDK 无法验证。
 - `PROXY_ENCRYPTION_KEY`：加密 D1 中的代理 URL。设置后必须稳定保存；更换会使已导入代理无法解密，需要全部重新导入。
-- `PROMO_ENCRYPTION_KEY`：加密 D1 中的优惠码/优惠链接并参与去重哈希。设置后不要更换，否则已导入优惠码无法解密。
+- `PROMO_ENCRYPTION_KEY`：加密 D1 中的优惠码并参与去重哈希。设置后不要更换，否则已导入优惠码无法解密。
 
 ### 4. 配置国家代理 Relay
 
@@ -147,15 +149,16 @@ npm run dev
 
 ## CDK 行为
 
-管理后台生成参数：
+客户 CDK 生成参数：
 
 - `count`：单批 1–50 个。
-- `maxUses`：每个 CDK 1–100000 次。
-- `expiresDays`：0–3650 天，0 表示长期有效。
 - `label`：最长 80 字符的内部备注。
-- `promoCountry`：优惠码库存国家，默认 `GB`。库存不足时整批生成会被拒绝，不会留下未绑定优惠码的 CDK。
 
-校核 CDK 本身不会扣次数。真正提交生成支付链时，后端使用带条件的 D1 `UPDATE` 原子加一，避免并发请求突破最大次数。国家代理未配置、请求参数不合法时不会扣次数；进入上游 Checkout 后即视为使用一次，即使上游最终拒绝或失败也会保留该次记录。
+服务端固定每个客户 CDK 仅可使用 1 次，并在生成后 24 小时过期；传入自定义次数或有效期不会改变该规则。库存不足时整批生成会被拒绝，不会留下未绑定优惠码的 CDK。
+
+管理员通用 CDK 长期有效、可重复使用、不分配优惠码。系统同时只保留一个有效管理员通用 CDK。
+
+校核 CDK 本身不会核销。真正提交生成支付链时，后端使用带条件的 D1 `UPDATE` 原子核销，避免同一客户 CDK 被并发使用。国家代理未配置、请求参数不合法时不会核销；进入上游 Checkout 后即视为已使用。
 
 CDK 可处于以下状态：
 
@@ -172,7 +175,7 @@ CDK 可处于以下状态：
 { "cdk": "ABCD-EFGH-JKLM-NPQR" }
 ```
 
-验证成功返回剩余次数、最大次数和有效期，不扣次数。
+验证成功返回 CDK 类型、是否无限次、剩余次数和有效期，不核销。
 
 ### `POST /api/checkout/team`
 
@@ -204,6 +207,7 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 - `GET /api/admin/cdks?limit=500`：CDK 列表和统计。
 - `POST /api/admin/cdks`：生成 CDK。
+- `POST /api/admin/cdks/universal`：生成新的管理员通用 CDK，并自动停用旧管理员 CDK。
 - `DELETE /api/admin/cdks/:id`：吊销 CDK。
 - `GET /api/admin/promos?limit=1000`：优惠码库存、分配状态和统计。
 - `POST /api/admin/promos`：批量加密导入优惠码。

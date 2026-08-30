@@ -1,5 +1,6 @@
 const MAX_PROMO_LENGTH = 240;
 const MAX_IMPORT_SIZE = 1_000;
+const GLOBAL_PROMO_SCOPE = 'GLOBAL';
 
 function bytesToBase64(bytes) {
   let binary = '';
@@ -21,11 +22,6 @@ function serviceReady(env) {
   return Boolean(env?.DB && env?.PROMO_ENCRYPTION_KEY);
 }
 
-function validCountry(value) {
-  const country = String(value || '').trim().toUpperCase();
-  return /^[A-Z]{2}$/.test(country) ? country : '';
-}
-
 export function normalizePromoCode(value) {
   let raw = String(value || '').trim();
   if (!raw || raw.length > MAX_PROMO_LENGTH) return '';
@@ -35,15 +31,16 @@ export function normalizePromoCode(value) {
     try {
       const url = new URL(raw);
       const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
-      if (url.protocol !== 'https:' || hostname !== 'chatgpt.com') return '';
+      if (!['http:', 'https:'].includes(url.protocol) || hostname !== 'chatgpt.com') return '';
       const match = /^\/p\/([A-Za-z0-9_-]{6,160})\/?$/.exec(url.pathname);
-      if (!match) return '';
-      return 'https://chatgpt.com/p/' + match[1].toUpperCase();
+      return match ? match[1].toUpperCase() : '';
     } catch {
       return '';
     }
   }
 
+  const pathMatch = /^\/?p\/([A-Za-z0-9_-]{6,160})\/?$/i.exec(raw);
+  if (pathMatch) return pathMatch[1].toUpperCase();
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{5,159}$/.test(raw)) return '';
   return raw.toUpperCase();
 }
@@ -56,10 +53,10 @@ export async function hashPromoCode(value, secret) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function encryptPromoCode(value, secret, country) {
+async function encryptPromoCode(value, secret, scope) {
   const key = await deriveEncryptionKey(secret);
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const additionalData = new TextEncoder().encode('promo:' + country);
+  const additionalData = new TextEncoder().encode('promo:' + scope);
   const encrypted = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv, additionalData },
     key,
@@ -68,11 +65,11 @@ async function encryptPromoCode(value, secret, country) {
   return 'v1.' + bytesToBase64(iv) + '.' + bytesToBase64(new Uint8Array(encrypted));
 }
 
-export async function decryptPromoCode(encryptedValue, secret, country) {
+async function decryptPromoCode(encryptedValue, secret, scope) {
   const [version, ivValue, ciphertextValue] = String(encryptedValue || '').split('.');
   if (version !== 'v1' || !ivValue || !ciphertextValue) throw new Error('invalid encrypted promo code');
   const key = await deriveEncryptionKey(secret);
-  const additionalData = new TextEncoder().encode('promo:' + country);
+  const additionalData = new TextEncoder().encode('promo:' + scope);
   const decrypted = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: base64ToBytes(ivValue), additionalData },
     key,
@@ -81,15 +78,8 @@ export async function decryptPromoCode(encryptedValue, secret, country) {
   return new TextDecoder().decode(decrypted);
 }
 
-function suffixFor(value) {
-  const normalized = normalizePromoCode(value);
-  const token = normalized.includes('/') ? normalized.split('/').pop() : normalized;
-  return token.slice(-6);
-}
-
 function maskedPromo(row) {
-  const prefix = String(row.encrypted_code || '').startsWith('v1.') ? 'chatgpt.com/p/' : '';
-  return prefix + '••••••' + row.code_suffix;
+  return '••••••' + row.code_suffix;
 }
 
 function entriesFromInput(input) {
@@ -100,9 +90,7 @@ function entriesFromInput(input) {
 
 export async function importPromoCodes(input, env) {
   if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
-  const country = validCountry(input?.country);
-  if (!country) return { ok: false, error: 'invalid_promo_country' };
-  const batchName = String(input?.batchName || '').trim().slice(0, 80) || country + ' 导入批次';
+  const batchName = String(input?.batchName || '').trim().slice(0, 80) || '全球优惠码';
   const sourceEntries = entriesFromInput(input);
   if (!sourceEntries.length || sourceEntries.length > MAX_IMPORT_SIZE) {
     return { ok: false, error: 'invalid_promo_import', max: MAX_IMPORT_SIZE };
@@ -125,16 +113,15 @@ export async function importPromoCodes(input, env) {
 
   const importedAt = new Date().toISOString();
   const prepared = await Promise.all(uniqueValues.map(async (value) => ({
-    value,
     hash: await hashPromoCode(value, env.PROMO_ENCRYPTION_KEY),
-    encrypted: await encryptPromoCode(value, env.PROMO_ENCRYPTION_KEY, country),
-    suffix: suffixFor(value),
+    encrypted: await encryptPromoCode(value, env.PROMO_ENCRYPTION_KEY, GLOBAL_PROMO_SCOPE),
+    suffix: value.slice(-6),
   })));
   const statements = prepared.map((item) => env.DB.prepare(
     `INSERT OR IGNORE INTO promo_codes
      (code_hash, encrypted_code, code_suffix, country, batch_name, imported_at, deleted_at)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)`
-  ).bind(item.hash, item.encrypted, item.suffix, country, batchName, importedAt));
+  ).bind(item.hash, item.encrypted, item.suffix, GLOBAL_PROMO_SCOPE, batchName, importedAt));
   const results = await env.DB.batch(statements);
   const importedCount = results.reduce(
     (count, result) => count + (Number(result?.meta?.changes || 0) === 1 ? 1 : 0),
@@ -142,7 +129,7 @@ export async function importPromoCodes(input, env) {
   );
   return {
     ok: true,
-    country,
+    scope: 'global',
     batchName,
     receivedCount: sourceEntries.length,
     validCount: prepared.length,
@@ -157,7 +144,6 @@ function publicPromoRecord(row) {
   return {
     id: Number(row.id),
     maskedCode: maskedPromo(row),
-    country: row.country,
     batchName: row.batch_name || '',
     importedAt: row.imported_at,
     state: assigned ? 'assigned' : 'available',
@@ -171,30 +157,27 @@ export async function listPromoCodes(env, options = {}) {
   if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
   const limitValue = Number(options.limit || 500);
   const limit = Number.isInteger(limitValue) && limitValue > 0 && limitValue <= 1_000 ? limitValue : 500;
-  const country = validCountry(options.country);
-  const filterSql = country ? 'WHERE p.country = ?1 AND p.deleted_at IS NULL' : 'WHERE p.deleted_at IS NULL';
-  const statement = env.DB.prepare(
-    `SELECT p.id, p.encrypted_code, p.code_suffix, p.country, p.batch_name, p.imported_at,
+  const result = await env.DB.prepare(
+    `SELECT p.id, p.code_suffix, p.batch_name, p.imported_at,
             a.cdk_id, a.assigned_at, c.code_suffix AS cdk_suffix
      FROM promo_codes p
      LEFT JOIN cdk_promo_assignments a ON a.promo_code_id = p.id
      LEFT JOIN cdks c ON c.id = a.cdk_id
-     ${filterSql}
-     ORDER BY p.id DESC LIMIT ?${country ? 2 : 1}`
-  );
-  const result = country ? await statement.bind(country, limit).all() : await statement.bind(limit).all();
+     WHERE p.deleted_at IS NULL
+     ORDER BY p.id DESC LIMIT ?1`
+  ).bind(limit).all();
   const records = (result?.results || []).map(publicPromoRecord);
-  const statsStatement = env.DB.prepare(
+  const statsRow = await env.DB.prepare(
     `SELECT COUNT(*) AS total,
             SUM(CASE WHEN a.cdk_id IS NULL THEN 1 ELSE 0 END) AS available,
             SUM(CASE WHEN a.cdk_id IS NOT NULL THEN 1 ELSE 0 END) AS assigned
      FROM promo_codes p
      LEFT JOIN cdk_promo_assignments a ON a.promo_code_id = p.id
-     ${filterSql}`
-  );
-  const statsRow = country ? await statsStatement.bind(country).first() : await statsStatement.first();
+     WHERE p.deleted_at IS NULL`
+  ).first();
   return {
     ok: true,
+    scope: 'global',
     records,
     stats: {
       total: Number(statsRow?.total || 0),
@@ -204,25 +187,23 @@ export async function listPromoCodes(env, options = {}) {
   };
 }
 
-export async function availablePromoCount(countryValue, env) {
+export async function availablePromoCount(env) {
   if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
-  const country = validCountry(countryValue);
-  if (!country) return { ok: false, error: 'invalid_promo_country' };
   const row = await env.DB.prepare(
     `SELECT COUNT(*) AS available
      FROM promo_codes p
-     WHERE p.country = ?1 AND p.deleted_at IS NULL
+     WHERE p.deleted_at IS NULL
        AND NOT EXISTS (
          SELECT 1 FROM cdk_promo_assignments a WHERE a.promo_code_id = p.id
        )`
-  ).bind(country).first();
-  return { ok: true, country, available: Number(row?.available || 0) };
+  ).first();
+  return { ok: true, scope: 'global', available: Number(row?.available || 0) };
 }
 
 export async function assignedPromoForCdkHash(codeHash, env) {
   if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
   const row = await env.DB.prepare(
-    `SELECT c.id AS cdk_id, p.encrypted_code, p.code_suffix, p.country
+    `SELECT c.id AS cdk_id, p.encrypted_code, p.country
      FROM cdks c
      JOIN cdk_promo_assignments a ON a.cdk_id = c.id
      JOIN promo_codes p ON p.id = a.promo_code_id
@@ -230,8 +211,10 @@ export async function assignedPromoForCdkHash(codeHash, env) {
   ).bind(codeHash).first();
   if (!row) return { ok: false, error: 'promo_assignment_missing' };
   try {
-    const promoCode = await decryptPromoCode(row.encrypted_code, env.PROMO_ENCRYPTION_KEY, row.country);
-    return { ok: true, cdkId: Number(row.cdk_id), promoCode, country: row.country };
+    const decrypted = await decryptPromoCode(row.encrypted_code, env.PROMO_ENCRYPTION_KEY, row.country);
+    const promoCode = normalizePromoCode(decrypted);
+    if (!promoCode) return { ok: false, error: 'promo_decryption_failed' };
+    return { ok: true, cdkId: Number(row.cdk_id), promoCode };
   } catch {
     return { ok: false, error: 'promo_decryption_failed' };
   }
