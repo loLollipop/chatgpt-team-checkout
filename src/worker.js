@@ -1,4 +1,11 @@
 import { createCdks, listCdks, revokeCdk, verifyCdk } from './cdk.js';
+import {
+  deleteProxyRoute,
+  getProxyRoute,
+  listProxyRoutes,
+  recordProxyTest,
+  saveProxyRoutes,
+} from './proxy-config.js';
 
 // ChatGPT Team 支付长链生成器 - Cloudflare Worker
 // 前端静态资源 + 国家配置 + 按国家转发 checkout 请求。
@@ -195,6 +202,37 @@ function allowDirectCheckout(env) {
   return String(env.ALLOW_DIRECT_CHECKOUT || '').toLowerCase() === 'true';
 }
 
+function validateRelayRoute(entry) {
+  const route = typeof entry === 'string' ? { url: entry, token: '' } : entry;
+  if (!route || typeof route !== 'object' || typeof route.url !== 'string') return null;
+  try {
+    const url = new URL(route.url);
+    const isLocalRelay =
+      url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if ((url.protocol !== 'https:' && !isLocalRelay) || url.username || url.password) return null;
+    return {
+      url: url.toString(),
+      token: typeof route.token === 'string' ? route.token : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * RELAY_CONFIG 是后台动态代理共用的 HTTPS Relay：
+ * { "url": "https://relay.example.com/forward", "token": "..." }
+ */
+function readCommonRelayConfiguration(env) {
+  if (!env.RELAY_CONFIG) return { route: null, parseError: false };
+  try {
+    const route = validateRelayRoute(JSON.parse(env.RELAY_CONFIG));
+    return { route, parseError: !route };
+  } catch {
+    return { route: null, parseError: true };
+  }
+}
+
 /**
  * COUNTRY_PROXY_CONFIG 是仅存放于 Worker 后台的 JSON secret：
  * { "US": { "url": "https://us-relay.example.com/forward", "token": "..." } }
@@ -222,46 +260,72 @@ function readProxyConfiguration(env) {
   for (const country of COUNTRIES) {
     const entry = parsed[country.code];
     if (entry == null) continue;
-    const route = typeof entry === 'string' ? { url: entry, token: '' } : entry;
-    if (!route || typeof route !== 'object' || typeof route.url !== 'string') {
+    const route = validateRelayRoute(entry);
+    if (!route) {
       result.invalidCountries.add(country.code);
       continue;
     }
-    try {
-      const url = new URL(route.url);
-      const isLocalRelay =
-        url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-      if ((url.protocol !== 'https:' && !isLocalRelay) || url.username || url.password) {
-        throw new Error('invalid relay URL');
-      }
-      result.routes.set(country.code, {
-        url: url.toString(),
-        token: typeof route.token === 'string' ? route.token : '',
-      });
-    } catch {
-      result.invalidCountries.add(country.code);
-    }
+    result.routes.set(country.code, route);
   }
   return result;
 }
 
-function configurationResponse(env) {
-  const proxyConfig = readProxyConfiguration(env);
+async function safeProxyOperation(operation) {
+  try {
+    return await operation();
+  } catch {
+    return { ok: false, error: 'proxy_database_error' };
+  }
+}
+
+function proxyFailureStatus(error) {
+  if (['proxy_service_not_configured', 'proxy_database_error', 'proxy_not_configured'].includes(error)) return 503;
+  if (error === 'relay_not_configured') return 503;
+  if (['relay_config_invalid', 'proxy_config_invalid'].includes(error)) return 500;
+  if (error === 'proxy_not_found') return 404;
+  if (error === 'proxy_decryption_failed') return 500;
+  return 400;
+}
+
+function proxyFailureResponse(result, env) {
+  return jsonResponse({ ok: false, error: result.error, country: result.country }, proxyFailureStatus(result.error), {}, env);
+}
+
+async function configuredDynamicProxyCountries(env) {
+  const result = await safeProxyOperation(() => listProxyRoutes(env));
+  // 后台动态代理是可选升级；未设置加密密钥时继续使用旧版环境变量路由。
+  if (!result.ok && result.error === 'proxy_service_not_configured') {
+    return { countries: new Set(), error: '' };
+  }
+  if (!result.ok) return { countries: new Set(), error: result.error };
+  return { countries: new Set(result.records.map((record) => record.country)), error: '' };
+}
+
+async function configurationResponse(env) {
+  const legacyProxyConfig = readProxyConfiguration(env);
+  const commonRelay = readCommonRelayConfiguration(env);
+  const dynamic = await configuredDynamicProxyCountries(env);
   const directAllowed = allowDirectCheckout(env);
-  const firstConfigured = COUNTRIES.find((country) => proxyConfig.routes.has(country.code));
+  const isConfigured = (code) =>
+    legacyProxyConfig.routes.has(code) ||
+    Boolean(dynamic.countries.has(code) && (commonRelay.route || legacyProxyConfig.routes.has(code)));
+  const firstConfigured = COUNTRIES.find((country) => isConfigured(country.code));
   return jsonResponse(
     {
       ok: true,
       defaultCountry: firstConfigured?.code || DEFAULT_COUNTRY,
       minSeats: MIN_SEATS,
       proxyRequired: !directAllowed,
-      configValid: !proxyConfig.parseError,
+      configValid: !legacyProxyConfig.parseError && !commonRelay.parseError && !dynamic.error,
       cdkRequired: true,
       cdkServiceReady: Boolean(env.DB && env.CDK_HASH_PEPPER),
+      proxyAdminReady: Boolean(
+        env.DB && env.PROXY_ENCRYPTION_KEY && (commonRelay.route || legacyProxyConfig.routes.size)
+      ),
       countries: COUNTRIES.map((country) => ({
         ...country,
-        proxyConfigured: proxyConfig.routes.has(country.code),
-        proxyConfigInvalid: proxyConfig.invalidCountries.has(country.code),
+        proxyConfigured: isConfigured(country.code),
+        proxyConfigInvalid: legacyProxyConfig.invalidCountries.has(country.code),
       })),
     },
     200,
@@ -356,6 +420,143 @@ async function handleAdminCdkItem(request, env, id) {
   return jsonResponse(result, 200, { 'Cache-Control': 'no-store' }, env);
 }
 
+function supportedCountryCodes() {
+  return COUNTRIES.map((country) => country.code);
+}
+
+function validCountryCode(value) {
+  const country = String(value || '').toUpperCase();
+  return COUNTRY_BY_CODE[country] ? country : '';
+}
+
+async function handleAdminProxies(request, env) {
+  const authorization = adminAuthorization(request, env);
+  if (!authorization.ok) {
+    return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
+  }
+
+  if (request.method === 'GET') {
+    const result = await safeProxyOperation(() => listProxyRoutes(env));
+    if (!result.ok) return proxyFailureResponse(result, env);
+    return jsonResponse(result, 200, { 'Cache-Control': 'no-store' }, env);
+  }
+
+  if (request.method === 'POST') {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
+    }
+    const result = await safeProxyOperation(() => saveProxyRoutes(body, env, supportedCountryCodes()));
+    if (!result.ok) return proxyFailureResponse(result, env);
+    return jsonResponse(result, 201, { 'Cache-Control': 'no-store' }, env);
+  }
+
+  return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
+}
+
+async function dynamicProxyAndRelay(country, env) {
+  const proxy = await safeProxyOperation(() => getProxyRoute(country, env));
+  if (!proxy.ok) return proxy;
+  if (!proxy.configured) return { ok: false, error: 'proxy_not_found', country };
+
+  const commonRelay = readCommonRelayConfiguration(env);
+  const legacyRelay = readProxyConfiguration(env);
+  if (!commonRelay.route && legacyRelay.invalidCountries.has(country)) {
+    return { ok: false, error: 'relay_config_invalid', country };
+  }
+  const relay = commonRelay.route || legacyRelay.routes.get(country) || null;
+  if (!relay) {
+    return {
+      ok: false,
+      error: commonRelay.parseError ? 'relay_config_invalid' : 'relay_not_configured',
+      country,
+    };
+  }
+  return { ok: true, proxy, relay };
+}
+
+function relayProbeUrl(forwardUrl) {
+  const url = new URL(forwardUrl);
+  url.pathname = url.pathname.endsWith('/forward')
+    ? url.pathname.slice(0, -'/forward'.length) + '/probe'
+    : url.pathname.replace(/\/$/, '') + '/probe';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+async function testDynamicProxy(country, env) {
+  const resolved = await dynamicProxyAndRelay(country, env);
+  if (!resolved.ok) return resolved;
+
+  let testResult;
+  try {
+    const response = await requestWithTimeout(relayProbeUrl(resolved.relay.url), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Relay-Country': country,
+        ...(resolved.relay.token ? { Authorization: 'Bearer ' + resolved.relay.token } : {}),
+      },
+      body: JSON.stringify({ country, proxyUrl: resolved.proxy.proxyUrl }),
+      redirect: 'manual',
+    });
+    const data = await response.json().catch(() => ({}));
+    const exitIp = typeof data.exitIp === 'string' ? data.exitIp.trim().slice(0, 80) : '';
+    const latencyMs = Number(data.latencyMs);
+    testResult = response.ok && data.ok && exitIp && Number.isFinite(latencyMs) && latencyMs >= 0
+      ? {
+          ok: true,
+          exitIp,
+          latencyMs,
+        }
+      : { ok: false, error: String(data.error || 'relay_probe_failed').slice(0, 160) };
+  } catch (error) {
+    testResult = {
+      ok: false,
+      error: error?.name === 'AbortError' ? 'relay_probe_timeout' : 'relay_probe_unreachable',
+    };
+  }
+
+  const recorded = await safeProxyOperation(() => recordProxyTest(country, testResult, env));
+  if (!recorded.ok) return recorded;
+  return testResult.ok
+    ? {
+        ok: true,
+        country,
+        exitIp: testResult.exitIp,
+        latencyMs: testResult.latencyMs == null ? null : Math.round(testResult.latencyMs),
+      }
+    : { ok: false, error: 'proxy_test_failed', reason: testResult.error, country };
+}
+
+async function handleAdminProxyItem(request, env, countryValue, action) {
+  const authorization = adminAuthorization(request, env);
+  if (!authorization.ok) {
+    return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
+  }
+  const country = validCountryCode(countryValue);
+  if (!country) return jsonResponse({ ok: false, error: 'unsupported_country' }, 400, {}, env);
+
+  if (!action && request.method === 'DELETE') {
+    const result = await safeProxyOperation(() => deleteProxyRoute(country, env));
+    if (!result.ok) return proxyFailureResponse(result, env);
+    return jsonResponse(result, 200, { 'Cache-Control': 'no-store' }, env);
+  }
+  if (action === 'test' && request.method === 'POST') {
+    const result = await testDynamicProxy(country, env);
+    if (!result.ok) {
+      const status = result.error === 'proxy_test_failed' ? 502 : proxyFailureStatus(result.error);
+      return jsonResponse(result, status, { 'Cache-Control': 'no-store' }, env);
+    }
+    return jsonResponse(result, 200, { 'Cache-Control': 'no-store' }, env);
+  }
+  return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
+}
+
 async function requestWithTimeout(url, init) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -364,6 +565,36 @@ async function requestWithTimeout(url, init) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function resolveCheckoutProxy(country, env) {
+  const legacy = readProxyConfiguration(env);
+  const commonRelay = readCommonRelayConfiguration(env);
+  const legacyRelay = legacy.routes.get(country) || null;
+  const dynamic = await safeProxyOperation(() => getProxyRoute(country, env));
+
+  if (dynamic.ok && dynamic.configured) {
+    const relay = commonRelay.route || legacyRelay;
+    if (!relay) {
+      return {
+        ok: false,
+        error: commonRelay.parseError || legacy.invalidCountries.has(country)
+          ? 'relay_config_invalid'
+          : 'relay_not_configured',
+        country,
+      };
+    }
+    return { ok: true, route: { ...relay, proxyUrl: dynamic.proxyUrl }, source: 'admin' };
+  }
+
+  if (legacy.parseError || legacy.invalidCountries.has(country)) {
+    return { ok: false, error: 'proxy_config_invalid', country };
+  }
+  if (legacyRelay) return { ok: true, route: legacyRelay, source: 'legacy' };
+  if (!dynamic.ok && dynamic.error === 'proxy_database_error') return dynamic;
+  if (!dynamic.ok && !['proxy_service_not_configured'].includes(dynamic.error)) return dynamic;
+  if (allowDirectCheckout(env)) return { ok: true, route: null, source: 'direct' };
+  return { ok: false, error: 'proxy_not_configured', country };
 }
 
 async function postCheckout(origin, payload, targetHeaders, proxyRoute, country) {
@@ -385,6 +616,7 @@ async function postCheckout(origin, payload, targetHeaders, proxyRoute, country)
             method: 'POST',
             headers: targetHeaders,
             body: JSON.stringify(payload),
+            ...(proxyRoute.proxyUrl ? { proxyUrl: proxyRoute.proxyUrl } : {}),
           }),
           redirect: 'manual',
         },
@@ -491,14 +723,9 @@ async function handleTeamCheckout(request, env) {
     );
   }
 
-  const proxyConfig = readProxyConfiguration(env);
-  if (proxyConfig.parseError || proxyConfig.invalidCountries.has(countryCode)) {
-    return jsonResponse({ ok: false, error: 'proxy_config_invalid', country: countryCode }, 500, {}, env);
-  }
-  const proxyRoute = proxyConfig.routes.get(countryCode) || null;
-  if (!proxyRoute && !allowDirectCheckout(env)) {
-    return jsonResponse({ ok: false, error: 'proxy_not_configured', country: countryCode }, 503, {}, env);
-  }
+  const proxyResolution = await resolveCheckoutProxy(countryCode, env);
+  if (!proxyResolution.ok) return proxyFailureResponse(proxyResolution, env);
+  const proxyRoute = proxyResolution.route;
 
   // 只有通过服务端校验并原子计次的 CDK 才能进入上游 Checkout。
   const cdkAuthorization = await safeCdkOperation(() => verifyCdk(body.cdk, env, { consume: true }));
@@ -602,13 +829,18 @@ export default {
     }
     if (url.pathname === '/health' && request.method === 'GET') {
       const proxyConfig = readProxyConfiguration(env);
+      const commonRelay = readCommonRelayConfiguration(env);
+      const dynamic = await configuredDynamicProxyCountries(env);
       return jsonResponse(
         {
           ok: true,
           service: 'chatgpt-team-checkout',
-          configuredProxyCount: proxyConfig.routes.size,
-          configValid: !proxyConfig.parseError,
+          configuredProxyCount: new Set([...proxyConfig.routes.keys(), ...dynamic.countries]).size,
+          configValid: !proxyConfig.parseError && !commonRelay.parseError && !dynamic.error,
           cdkServiceReady: Boolean(env.DB && env.CDK_HASH_PEPPER),
+          proxyAdminReady: Boolean(
+            env.DB && env.PROXY_ENCRYPTION_KEY && (commonRelay.route || proxyConfig.routes.size)
+          ),
           adminReady: Boolean(env.ADMIN_TOKEN),
         },
         200,
@@ -627,6 +859,13 @@ export default {
     }
     const adminCdkMatch = /^\/api\/admin\/cdks\/(\d+)$/.exec(url.pathname);
     if (adminCdkMatch) return handleAdminCdkItem(request, env, adminCdkMatch[1]);
+    if (url.pathname === '/api/admin/proxies' && ['GET', 'POST'].includes(request.method)) {
+      return handleAdminProxies(request, env);
+    }
+    const adminProxyMatch = /^\/api\/admin\/proxies\/([A-Za-z]{2})(?:\/(test))?$/.exec(url.pathname);
+    if (adminProxyMatch) {
+      return handleAdminProxyItem(request, env, adminProxyMatch[1], adminProxyMatch[2] || '');
+    }
     if (url.pathname === '/api/checkout/team' && request.method === 'POST') {
       return handleTeamCheckout(request, env);
     }

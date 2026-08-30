@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light" />
   <meta name="theme-color" content="#17201b" />
-  <title>CDK 管理后台</title>
+  <title>授权与代理管理后台</title>
   <link rel="stylesheet" href="./style.css" />
   <link rel="stylesheet" href="./admin.css" />
 </head>
@@ -16,7 +16,7 @@
         <span class="admin-brand-mark" aria-hidden="true">◆</span>
         <span>
           <small>CHECKOUT CONTROL</small>
-          <strong>CDK 管理后台</strong>
+          <strong>授权与代理后台</strong>
         </span>
       </a>
       <div class="admin-head-actions">
@@ -50,9 +50,9 @@
     <div id="admin-dashboard" class="admin-dashboard" hidden>
       <section class="dashboard-title-row">
         <div>
-          <p class="admin-kicker">LICENSE INVENTORY</p>
-          <h1>授权码控制台</h1>
-          <p>生成、追踪和吊销支付工具的使用权限。</p>
+          <p class="admin-kicker">CHECKOUT OPERATIONS</p>
+          <h1>授权与路由控制台</h1>
+          <p>管理 CDK 使用权限，以及各国家的加密代理路由。</p>
         </div>
         <button id="refresh-btn" class="admin-outline-btn" type="button">↻ 刷新数据</button>
       </section>
@@ -64,10 +64,65 @@
         <article class="stat-card"><span>失效记录</span><strong id="stat-inactive">0</strong><small>过期或吊销</small></article>
       </section>
 
+      <section class="admin-panel proxy-panel" aria-labelledby="proxy-panel-title">
+        <div class="panel-heading proxy-heading">
+          <span class="panel-number">01</span>
+          <div>
+            <h2 id="proxy-panel-title">国家代理路由</h2>
+            <p>代理凭据使用 AES-GCM 加密存入 D1；保存后仅展示脱敏地址。</p>
+          </div>
+          <span id="proxy-count" class="proxy-count">0 / 8 已配置</span>
+        </div>
+
+        <div class="proxy-editor-grid">
+          <form id="proxy-form" class="proxy-editor-card">
+            <div class="proxy-editor-title"><strong>单个导入</strong><span>保存会替换该国家现有代理</span></div>
+            <div class="proxy-input-row">
+              <label class="admin-field">
+                <span>国家</span>
+                <select id="proxy-country" required>
+                  <option value="US">🇺🇸 美国 · US</option>
+                  <option value="EG">🇪🇬 埃及 · EG</option>
+                  <option value="GB">🇬🇧 英国 · GB</option>
+                  <option value="PH">🇵🇭 菲律宾 · PH</option>
+                  <option value="JP">🇯🇵 日本 · JP</option>
+                  <option value="TH">🇹🇭 泰国 · TH</option>
+                  <option value="IN">🇮🇳 印度 · IN</option>
+                  <option value="SE">🇸🇪 瑞典 · SE</option>
+                </select>
+              </label>
+              <label class="admin-field proxy-url-field">
+                <span>HTTP / HTTPS 代理地址</span>
+                <input id="proxy-url" type="password" autocomplete="off" spellcheck="false"
+                  placeholder="http://user:password@host:port" required />
+              </label>
+              <button id="save-proxy-btn" class="admin-primary-btn" type="submit">加密保存</button>
+            </div>
+            <p id="proxy-message" class="admin-message" aria-live="polite"></p>
+          </form>
+
+          <form id="proxy-batch-form" class="proxy-editor-card proxy-batch-card">
+            <div class="proxy-editor-title"><strong>批量导入</strong><span>支持逐行或 JSON；只覆盖本次包含的国家</span></div>
+            <label class="admin-field">
+              <span>代理清单</span>
+              <textarea id="proxy-batch" autocomplete="off" spellcheck="false"
+                placeholder="US=http://user:password@host:port&#10;JP=http://user:password@host:port"></textarea>
+            </label>
+            <div class="proxy-batch-actions">
+              <small>JSON 示例：{&quot;US&quot;:&quot;http://…&quot;,&quot;JP&quot;:&quot;http://…&quot;}</small>
+              <button id="batch-proxy-btn" class="admin-outline-btn" type="submit">批量加密导入</button>
+            </div>
+            <p id="proxy-batch-message" class="admin-message" aria-live="polite"></p>
+          </form>
+        </div>
+
+        <div id="proxy-route-grid" class="proxy-route-grid" aria-live="polite"></div>
+      </section>
+
       <section class="admin-workspace">
         <article class="admin-panel generator-panel">
           <div class="panel-heading">
-            <span class="panel-number">01</span>
+            <span class="panel-number">02</span>
             <div><h2>签发新 CDK</h2><p>明文授权码仅在生成后展示一次。</p></div>
           </div>
           <form id="generate-form" class="generate-form">
@@ -107,7 +162,7 @@
 
       <section class="admin-panel inventory-panel">
         <div class="panel-heading inventory-heading">
-          <span class="panel-number">02</span>
+          <span class="panel-number">03</span>
           <div><h2>授权记录</h2><p>数据库只保留哈希与末四位，无法恢复完整 CDK。</p></div>
         </div>
         <div class="table-wrap">

@@ -6,10 +6,11 @@
 
 - 用户必须先校核 CDK，验证通过后页面才会解锁。
 - Checkout API 会再次验证 CDK 并原子扣减一次使用次数，不能绕过前端。
-- `/admin` 管理后台支持批量生成、备注、有效天数、使用次数、列表和吊销。
+- `/admin` 管理后台支持 CDK 签发/吊销，以及国家代理的单个导入、批量导入、测试和删除。
 - CDK 明文只在生成时返回一次，D1 只保存 `SHA-256(Pepper + CDK)` 和末四位。
 - 支持美国、埃及、英国、菲律宾、日本、泰国、印度、瑞典八个可点击国家卡片。
 - 后端强制匹配国家币种，并通过对应国家代理生成 Checkout 链接。
+- 代理凭据使用 AES-GCM 加密存入 D1，管理 API 只返回脱敏地址。
 
 ## 请求链路
 
@@ -19,7 +20,8 @@
   → 页面解锁
   → 用户提交 Access Token 和国家
   → Worker 再次验证 CDK并原子计次
-  → HTTPS Relay 按国家选择普通代理
+  → Worker 解密该国家代理并交给 HTTPS Relay
+  → Relay 通过对应 HTTP / HTTPS 代理出站
   → chatgpt.com / api.openai.com
 ```
 
@@ -45,19 +47,21 @@ npx wrangler d1 create chatgpt-team-checkout-db
 npx wrangler d1 migrations apply chatgpt-team-checkout-db --remote
 ```
 
-迁移文件位于 `migrations/0001_create_cdks.sql`。
+该命令会依次执行 `0001_create_cdks.sql` 和 `0002_create_proxy_routes.sql`。
 
-### 3. 设置 CDK 安全密钥
+### 3. 设置后台安全密钥
 
-分别生成两个不同的长随机字符串，然后写入 Worker Secret：
+分别生成三个不同的长随机字符串，然后写入 Worker Secret：
 
 ```powershell
 npx wrangler secret put ADMIN_TOKEN
 npx wrangler secret put CDK_HASH_PEPPER
+npx wrangler secret put PROXY_ENCRYPTION_KEY
 ```
 
 - `ADMIN_TOKEN`：登录 `/admin` 管理后台使用。
 - `CDK_HASH_PEPPER`：参与 CDK 哈希，不得与 ADMIN_TOKEN 相同，设置后不要随意更换；更换会使已有 CDK 无法验证。
+- `PROXY_ENCRYPTION_KEY`：加密 D1 中的代理 URL。设置后必须稳定保存；更换会使已导入代理无法解密，需要全部重新导入。
 
 ### 4. 配置国家代理 Relay
 
@@ -69,36 +73,35 @@ Cloudflare Worker 的 `fetch` 不能直接使用普通 `IP:端口` HTTP/SOCKS �
 copy .relay.env.example .relay.env
 ```
 
-编辑 `.relay.env`：
+编辑 `.relay.env`。新版由后台动态下发代理，因此 Relay 只需要一个鉴权密钥：
 
 ```dotenv
 PORT=8790
 RELAY_TOKEN=一个足够长的随机密钥
-COUNTRY_UPSTREAM_PROXIES='{"US":"http://user:password@us-proxy.example.com:8080","EG":"http://user:password@eg-proxy.example.com:8080"}'
+COUNTRY_UPSTREAM_PROXIES='{}'
 ```
 
-支持的 Key：`US`、`EG`、`GB`、`PH`、`JP`、`TH`、`IN`、`SE`。代理 Value 支持 `http://` 或 `https://`，账号密码可写在 URL 中。
+把 Relay 部署到 Railway、Render、Fly.io、VPS 等支持长期运行 Node.js 的平台，并确保外部地址是 HTTPS。Cloudflare Worker 本身不能直接连接普通代理，所以 Relay 不能省略。
 
-将 Relay 部署为 HTTPS 服务后，把各国 Relay 地址写入 Worker Secret：
+将同一个 Relay 地址写入 Worker Secret：
 
 ```json
-{
-  "US": { "url": "https://relay.example.com/forward", "token": "RELAY_TOKEN" },
-  "EG": { "url": "https://relay.example.com/forward", "token": "RELAY_TOKEN" },
-  "GB": { "url": "https://relay.example.com/forward", "token": "RELAY_TOKEN" },
-  "PH": { "url": "https://relay.example.com/forward", "token": "RELAY_TOKEN" },
-  "JP": { "url": "https://relay.example.com/forward", "token": "RELAY_TOKEN" },
-  "TH": { "url": "https://relay.example.com/forward", "token": "RELAY_TOKEN" },
-  "IN": { "url": "https://relay.example.com/forward", "token": "RELAY_TOKEN" },
-  "SE": { "url": "https://relay.example.com/forward", "token": "RELAY_TOKEN" }
-}
+{ "url": "https://relay.example.com/forward", "token": "与 RELAY_TOKEN 相同的值" }
 ```
 
 ```powershell
-npx wrangler secret put COUNTRY_PROXY_CONFIG
+npx wrangler secret put RELAY_CONFIG
 ```
 
-默认缺少国家代理时拒绝请求，不会静默直连。仅本地调试可设置 `ALLOW_DIRECT_CHECKOUT=true`。
+部署 Worker 后打开 `/admin`，输入 `ADMIN_TOKEN`，即可按国家导入代理。支持：
+
+- 单个导入：`http://user:password@host:port`
+- 逐行批量导入：`US=http://user:password@host:port`
+- JSON 批量导入：`{"US":"http://...","JP":"http://..."}`
+
+导入后可直接测试出口 IP 和延迟。页面不会再次显示代理明文。支持的国家代码为 `US`、`EG`、`GB`、`PH`、`JP`、`TH`、`IN`、`SE`，代理协议支持 `http://` 和 `https://`。
+
+默认缺少该国家代理时拒绝请求，不会静默直连。仅本地调试可设置 `ALLOW_DIRECT_CHECKOUT=true`。旧版 `COUNTRY_PROXY_CONFIG` 和 Relay 的 `COUNTRY_UPSTREAM_PROXIES` 仍保留为兼容回退，后台导入的代理优先。
 
 ### 5. 部署
 
@@ -193,13 +196,17 @@ Authorization: Bearer <ADMIN_TOKEN>
 - `GET /api/admin/cdks?limit=500`：CDK 列表和统计。
 - `POST /api/admin/cdks`：生成 CDK。
 - `DELETE /api/admin/cdks/:id`：吊销 CDK。
+- `GET /api/admin/proxies`：返回代理脱敏列表。
+- `POST /api/admin/proxies`：单个或批量加密保存代理。
+- `POST /api/admin/proxies/:country/test`：通过 Relay 测试出口 IP 和延迟。
+- `DELETE /api/admin/proxies/:country`：删除国家代理。
 
 ## 安全说明
 
 - Access Token、CDK 明文和 ADMIN_TOKEN 都不会写入浏览器持久存储。
 - D1 不保存 CDK 明文，数据库泄露后仍需要服务端 Pepper 才能校验候选值。
-- 管理 Token、哈希 Pepper、Relay Token 和国家代理凭据只存在于服务端环境变量。
+- 管理 Token、哈希 Pepper 和 Relay Token 只存在于服务端 Secret；代理凭据经 AES-GCM 加密后存入 D1。
 - CDK 校核有独立限速，Checkout 也有 IP 限速。
-- Relay 只允许两个固定 Checkout 目标，不能作为开放代理。
+- Relay 只允许两个固定 Checkout 目标，测试端点也只允许访问固定的 ipify 地址，不能作为开放代理。
 - `.dev.vars`、`.relay.env`、`.wrangler` 和 `node_modules` 已被 `.gitignore` 排除。
 - 可设置 `ALLOWED_ORIGIN=https://你的前端域名` 收紧 CORS，默认值为 `*`。

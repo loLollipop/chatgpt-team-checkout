@@ -1,10 +1,13 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
+import { isIP } from 'node:net';
 import { ProxyAgent, request } from 'undici';
 
 const PORT = Number(process.env.PORT || 8790);
 const RELAY_TOKEN = process.env.RELAY_TOKEN || '';
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_PROXY_AGENTS = 32;
+const IP_CHECK_URL = 'https://api.ipify.org?format=json';
 const ALLOWED_COUNTRIES = new Set(['US', 'EG', 'GB', 'PH', 'JP', 'TH', 'IN', 'SE']);
 const ALLOWED_TARGETS = new Set([
   'https://chatgpt.com/backend-api/payments/checkout',
@@ -26,6 +29,28 @@ const ALLOWED_TARGET_HEADERS = new Set([
 
 if (!RELAY_TOKEN) throw new Error('RELAY_TOKEN is required');
 
+function parseProxyUrl(rawUrl, label = 'proxy') {
+  if (typeof rawUrl !== 'string' || !rawUrl || /\s/.test(rawUrl)) {
+    throw new Error(label + ' URL must be a string');
+  }
+  const url = new URL(rawUrl);
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error(label + ' must use http:// or https://');
+  }
+  if ((url.pathname && url.pathname !== '/') || url.search || url.hash) {
+    throw new Error(label + ' URL cannot include a path, query, or fragment');
+  }
+  if (url.password && !url.username) throw new Error(label + ' username is required');
+  const username = decodeURIComponent(url.username || '');
+  const password = decodeURIComponent(url.password || '');
+  const token = username
+    ? 'Basic ' + Buffer.from(username + ':' + password).toString('base64')
+    : '';
+  url.username = '';
+  url.password = '';
+  return { uri: url.toString(), token };
+}
+
 function parseCountryProxies() {
   let parsed;
   try {
@@ -41,19 +66,7 @@ function parseCountryProxies() {
   for (const country of ALLOWED_COUNTRIES) {
     const rawUrl = parsed[country];
     if (rawUrl == null) continue;
-    if (typeof rawUrl !== 'string') throw new Error(country + ' proxy URL must be a string');
-    const url = new URL(rawUrl);
-    if (!['http:', 'https:'].includes(url.protocol)) {
-      throw new Error(country + ' proxy must use http:// or https://');
-    }
-    const username = decodeURIComponent(url.username || '');
-    const password = decodeURIComponent(url.password || '');
-    const token = username
-      ? 'Basic ' + Buffer.from(username + ':' + password).toString('base64')
-      : '';
-    url.username = '';
-    url.password = '';
-    routes.set(country, { uri: url.toString(), token });
+    routes.set(country, parseProxyUrl(rawUrl, country + ' proxy'));
   }
   return routes;
 }
@@ -61,14 +74,31 @@ function parseCountryProxies() {
 const proxyRoutes = parseCountryProxies();
 const proxyAgents = new Map();
 
-function getProxyAgent(country) {
-  const route = proxyRoutes.get(country);
-  if (!route) return null;
+function cachedProxyAgent(route) {
   const cacheKey = route.uri + '|' + route.token;
-  if (!proxyAgents.has(cacheKey)) {
-    proxyAgents.set(cacheKey, new ProxyAgent({ uri: route.uri, token: route.token || undefined }));
+  if (proxyAgents.has(cacheKey)) {
+    const existing = proxyAgents.get(cacheKey);
+    proxyAgents.delete(cacheKey);
+    proxyAgents.set(cacheKey, existing);
+    return existing;
   }
-  return proxyAgents.get(cacheKey);
+
+  const agent = new ProxyAgent({ uri: route.uri, token: route.token || undefined });
+  proxyAgents.set(cacheKey, agent);
+  if (proxyAgents.size > MAX_PROXY_AGENTS) {
+    const oldestKey = proxyAgents.keys().next().value;
+    const oldestAgent = proxyAgents.get(oldestKey);
+    proxyAgents.delete(oldestKey);
+    void oldestAgent.close().catch(() => {});
+  }
+  return agent;
+}
+
+function getProxyAgent(country, requestProxyUrl) {
+  const route = requestProxyUrl == null
+    ? proxyRoutes.get(country)
+    : parseProxyUrl(requestProxyUrl, 'request proxy');
+  return route ? cachedProxyAgent(route) : null;
 }
 
 function jsonResponse(response, status, body) {
@@ -129,12 +159,6 @@ async function handleForward(incoming, outgoing) {
     jsonResponse(outgoing, 400, { ok: false, error: 'unsupported_country' });
     return;
   }
-  const dispatcher = getProxyAgent(country);
-  if (!dispatcher) {
-    jsonResponse(outgoing, 503, { ok: false, error: 'country_proxy_not_configured', country });
-    return;
-  }
-
   let envelope;
   try {
     envelope = JSON.parse(await readRequestBody(incoming));
@@ -148,6 +172,18 @@ async function handleForward(incoming, outgoing) {
   const targetHeaders = sanitizeTargetHeaders(envelope.headers);
   if (!ALLOWED_TARGETS.has(target) || envelope.method !== 'POST' || typeof envelope.body !== 'string' || !targetHeaders) {
     jsonResponse(outgoing, 400, { ok: false, error: 'invalid_forward_request' });
+    return;
+  }
+
+  let dispatcher;
+  try {
+    dispatcher = getProxyAgent(country, envelope.proxyUrl);
+  } catch {
+    jsonResponse(outgoing, 400, { ok: false, error: 'invalid_proxy_url' });
+    return;
+  }
+  if (!dispatcher) {
+    jsonResponse(outgoing, 503, { ok: false, error: 'country_proxy_not_configured', country });
     return;
   }
 
@@ -173,6 +209,66 @@ async function handleForward(incoming, outgoing) {
   }
 }
 
+async function handleProbe(incoming, outgoing) {
+  if (!hasValidToken(incoming.headers.authorization)) {
+    jsonResponse(outgoing, 401, { ok: false, error: 'relay_unauthorized' });
+    return;
+  }
+
+  let input;
+  try {
+    input = JSON.parse(await readRequestBody(incoming));
+  } catch (error) {
+    const status = error.message === 'request_too_large' ? 413 : 400;
+    jsonResponse(outgoing, status, { ok: false, error: status === 413 ? 'request_too_large' : 'invalid_json' });
+    return;
+  }
+  const country = String(input.country || incoming.headers['x-relay-country'] || '').toUpperCase();
+  if (!ALLOWED_COUNTRIES.has(country)) {
+    jsonResponse(outgoing, 400, { ok: false, error: 'unsupported_country' });
+    return;
+  }
+
+  let dispatcher;
+  try {
+    dispatcher = getProxyAgent(country, input.proxyUrl);
+  } catch {
+    jsonResponse(outgoing, 400, { ok: false, error: 'invalid_proxy_url' });
+    return;
+  }
+  if (!dispatcher) {
+    jsonResponse(outgoing, 503, { ok: false, error: 'country_proxy_not_configured', country });
+    return;
+  }
+
+  const startedAt = Date.now();
+  try {
+    const upstream = await request(IP_CHECK_URL, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+      dispatcher,
+      maxRedirections: 0,
+      headersTimeout: 15_000,
+      bodyTimeout: 15_000,
+    });
+    const body = await readUpstreamBody(upstream.body);
+    let data = {};
+    try {
+      data = JSON.parse(body.toString('utf8'));
+    } catch {
+      data = {};
+    }
+    const exitIp = typeof data.ip === 'string' ? data.ip.trim() : '';
+    if (upstream.statusCode !== 200 || !isIP(exitIp)) {
+      jsonResponse(outgoing, 502, { ok: false, error: 'proxy_probe_invalid_response' });
+      return;
+    }
+    jsonResponse(outgoing, 200, { ok: true, exitIp, latencyMs: Date.now() - startedAt });
+  } catch {
+    jsonResponse(outgoing, 502, { ok: false, error: 'proxy_probe_failed' });
+  }
+}
+
 const server = createServer(async (request, response) => {
   const url = new URL(request.url || '/', 'http://localhost');
   if (request.method === 'GET' && url.pathname === '/health') {
@@ -181,6 +277,10 @@ const server = createServer(async (request, response) => {
   }
   if (request.method === 'POST' && url.pathname === '/forward') {
     await handleForward(request, response);
+    return;
+  }
+  if (request.method === 'POST' && url.pathname === '/probe') {
+    await handleProbe(request, response);
     return;
   }
   jsonResponse(response, 404, { ok: false, error: 'not_found' });
