@@ -71,6 +71,10 @@ const ERROR_MESSAGES = {
   all_origins_failed: 'Checkout 服务暂时不可用，请检查代理后重试。',
 };
 
+// Token 显隐按钮的两枚 SVG 图标（显示 ↔ 隐藏）
+const ICON_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 8 10 8a18.5 18.5 0 0 1-2.16 3.19M6.61 6.61A13.53 13.53 0 0 0 2 12s3.5 8 10 8a9.74 9.74 0 0 0 5.39-1.61"/><path d="m2 2 20 20"/><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/></svg>';
+
 const state = {
   config: null,
   activeCdk: '',
@@ -139,6 +143,25 @@ function promoValue(rawValue) {
   return raw;
 }
 
+/**
+ * 创建国旗 <img>。SVG 国旗放在本地 public/flags/ 下（Windows 无法渲染旗帜 emoji，
+ * 只能用图片）；图片加载失败时回退到 emoji 文本，保证任何环境都有可读标识。
+ */
+function flagImage(country, className = 'flag-img') {
+  const image = document.createElement('img');
+  image.className = className;
+  image.src = `/flags/${country.code.toLowerCase()}.svg`;
+  image.alt = `${country.name}国旗`;
+  image.loading = 'lazy';
+  image.addEventListener('error', () => {
+    const fallback = document.createElement('span');
+    fallback.className = 'flag-emoji';
+    fallback.textContent = country.flag || '🌐';
+    image.replaceWith(fallback);
+  }, { once: true });
+  return image;
+}
+
 async function loadConfig() {
   if (state.config) return state.config;
   const config = await requestJson('/api/config', { method: 'GET', headers: {} });
@@ -178,9 +201,6 @@ function renderCountryOptions(query = '') {
     button.disabled = !country.proxyConfigured;
     button.dataset.country = country.code;
 
-    const flag = document.createElement('span');
-    flag.className = 'flag';
-    flag.textContent = country.flag;
     const copy = document.createElement('span');
     copy.className = 'country-copy';
     const name = document.createElement('b');
@@ -195,7 +215,7 @@ function renderCountryOptions(query = '') {
     const usd = document.createElement('small');
     usd.textContent = `≈ $${country.usdPrice} USD`;
     prices.append(local, usd);
-    button.append(flag, copy, prices);
+    button.append(flagImage(country, 'flag-img'), copy, prices);
     button.addEventListener('click', () => selectCountry(country.code));
     elements.countryOptions.append(button);
   });
@@ -207,9 +227,6 @@ function selectCountry(code) {
   state.country = country;
   elements.countryInput.value = country.code;
   elements.countryTriggerMain.replaceChildren();
-  const flag = document.createElement('span');
-  flag.className = 'selected-flag';
-  flag.textContent = country.flag;
   const copy = document.createElement('span');
   copy.className = 'selected-copy';
   const name = document.createElement('b');
@@ -217,14 +234,14 @@ function selectCountry(code) {
   const meta = document.createElement('small');
   meta.textContent = `${country.currency} · ${country.proxyConfigured ? '代理已配置' : '代理未配置'}`;
   copy.append(name, meta);
-  elements.countryTriggerMain.append(flag, copy);
+  elements.countryTriggerMain.append(flagImage(country, 'flag-img flag-img-sm'), copy);
 
-  elements.priceFlag.textContent = country.flag;
+  elements.priceFlag.replaceChildren(flagImage(country, 'flag-img flag-img-lg'));
   elements.priceCountry.textContent = `${country.name} · ${country.code}`;
   elements.priceCurrency.textContent = `${country.currency} 自动结算`;
   elements.priceLocal.textContent = country.localPrice;
   elements.priceUsd.textContent = `$${country.usdPrice}`;
-  elements.summaryFlag.textContent = country.flag;
+  elements.summaryFlag.replaceChildren(flagImage(country, 'flag-img flag-img-lg'));
   elements.summaryCountry.textContent = `${country.name} · ${country.currency}`;
   elements.summaryRoute.textContent = country.proxyConfigured ? '专属国家代理已就绪' : '该国家代理未配置';
   closeCountryMenu();
@@ -377,7 +394,7 @@ elements.accessToken.classList.add('token-hidden');
 elements.toggleToken.addEventListener('click', () => {
   state.tokenVisible = !state.tokenVisible;
   elements.accessToken.classList.toggle('token-hidden', !state.tokenVisible);
-  elements.toggleToken.textContent = state.tokenVisible ? '◌' : '◉';
+  elements.toggleToken.innerHTML = state.tokenVisible ? ICON_EYE_OFF : ICON_EYE;
   elements.toggleToken.setAttribute('aria-label', state.tokenVisible ? '隐藏 Token' : '显示 Token');
 });
 
@@ -405,7 +422,7 @@ elements.form.addEventListener('submit', async (event) => {
 
   const seats = seatValues();
   setLoading(elements.generateButton, true, elements.generateLabel, '正在创建 Checkout…', '生成支付长链');
-  setStatus(elements.formStatus, '正在通过国家代理连接 ChatGPT Checkout…', 'info');
+  setStatus(elements.formStatus, '正在通过所选国家代理创建 ChatGPT Checkout…', 'info');
   try {
     const data = await requestJson('/api/checkout/team', {
       method: 'POST',
@@ -424,10 +441,10 @@ elements.form.addEventListener('submit', async (event) => {
     elements.openResult.href = data.url;
     elements.resultCard.hidden = false;
     elements.cdkRemaining.textContent = data.cdkRemainingUses == null ? '管理员通用 · 长期有效' : `剩余 ${data.cdkRemainingUses} 次`;
-    setStatus(elements.formStatus, '支付长链已生成。', 'success');
+    setStatus(elements.formStatus, '支付长链创建成功。', 'success');
     elements.resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (error) {
-    setStatus(elements.formStatus, error.message || '生成失败，请稍后重试。', 'error');
+    setStatus(elements.formStatus, error.message || '创建失败，请稍后重试。', 'error');
     if (String(error.data?.error || '').startsWith('cdk_')) {
       setTimeout(lockWorkbench, 1400);
     }
@@ -449,5 +466,5 @@ elements.copyResult.addEventListener('click', async () => {
 });
 
 updateSummary();
-loadConfig().catch((error) => setStatus(elements.cdkStatus, error.message || '服务配置加载失败。', 'error'));
+loadConfig().catch((error) => setStatus(elements.cdkStatus, error.message || '初始配置加载失败。', 'error'));
 elements.cdkInput.focus();

@@ -33,6 +33,15 @@ function node(tag, className = '', text = '') {
   if (text !== '') element.textContent = text;
   return element;
 }
+// Windows 无法渲染旗帜 emoji，代理卡片统一使用本地 SVG 国旗图片，失败时回退 emoji。
+function flagImage(country) {
+  const image = node('img', 'flag-img');
+  image.src = `/flags/${country.code.toLowerCase()}.svg`;
+  image.alt = `${country.name}国旗`;
+  image.loading = 'lazy';
+  image.addEventListener('error', () => image.replaceWith(node('span', 'flag-emoji', country.flag || '🌐')), { once: true });
+  return image;
+}
 function setStatus(element, message = '', type = '') { element.textContent = message; element.className = 'status' + (element === elements.globalStatus ? ' global-status' : '') + (type ? ' ' + type : ''); }
 function errorMessage(data, fallback = '操作失败，请稍后重试。') { return ERROR_MESSAGES[data?.error] || data?.reason || data?.message || fallback; }
 function formatDate(value, fallback = '长期') { if (!value) return fallback; const date = new Date(value); return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }); }
@@ -157,7 +166,7 @@ function renderPromos() {
 function renderProxies() {
   elements.proxyGrid.replaceChildren();
   (state.config?.countries || []).forEach((country) => {
-    const record = state.proxies.find((proxy) => proxy.country === country.code); const card = node('article', 'proxy-card' + (record ? '' : ' proxy-unconfigured')); const head = node('div', 'proxy-card-head'); const countryBlock = node('div', 'proxy-country'); countryBlock.append(node('span', '', country.flag)); const copy = node('div'); copy.append(node('b', '', `${country.name} · ${country.code}`), node('small', '', country.currency)); countryBlock.append(copy); head.append(countryBlock, stateBadge(record?.testStatus || 'untested'));
+    const record = state.proxies.find((proxy) => proxy.country === country.code); const card = node('article', 'proxy-card' + (record ? '' : ' proxy-unconfigured')); const head = node('div', 'proxy-card-head'); const countryBlock = node('div', 'proxy-country'); countryBlock.append(flagImage(country)); const copy = node('div'); copy.append(node('b', '', `${country.name} · ${country.code}`), node('small', '', country.currency)); countryBlock.append(copy); head.append(countryBlock, stateBadge(record?.testStatus || 'untested'));
     card.append(head, node('div', 'proxy-url', record?.displayUrl || '尚未导入代理'));
     const meta = node('div', 'proxy-meta'); meta.append(node('span', '', record?.exitIp ? `出口 ${record.exitIp}` : '无出口记录'), node('span', '', record?.latencyMs != null ? `${record.latencyMs} ms` : '—')); card.append(meta);
     const actions = node('div', 'proxy-actions'); const test = node('button', '', record ? '测试代理' : '前往导入'); test.type = 'button'; test.addEventListener('click', () => record ? testProxy(country.code, test) : focusProxyCountry(country.code)); const remove = node('button', '', '×'); remove.type = 'button'; remove.disabled = !record; remove.title = '删除代理'; if (record) remove.addEventListener('click', () => deleteProxy(country.code)); actions.append(test, remove); card.append(actions); elements.proxyGrid.append(card);

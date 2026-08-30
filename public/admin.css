@@ -1,19 +1,23 @@
 :root {
-  --ink: #17201d;
-  --muted: #68746f;
-  --line: #dfe5e2;
-  --soft-line: #edf1ef;
-  --canvas: #f5f7f6;
+  --ink: #0f1815;
+  --muted: #5f6f68;
+  --line: #dde6e1;
+  --soft-line: #ebf1ee;
+  --canvas: #eef1ef;
   --surface: #fff;
   --accent: #10a37f;
-  --accent-dark: #087e62;
-  --accent-soft: #e8f8f2;
-  --danger: #bc3d3d;
-  --warning: #a96600;
-  font-family: "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --accent-dark: #0b8467;
+  --accent-ink: #085c46;
+  --accent-soft: #e4f6ef;
+  --danger: #c13d3d;
+  --warning: #b45309;
+  font-family: "HarmonyOS Sans SC", "MiSans", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
   color: var(--ink);
   background: var(--canvas);
 }
+/* 国旗图片（Windows 无法渲染旗帜 emoji，后台代理卡片用本地 SVG 一张）*/
+.flag-img { display: block; width: 34px; aspect-ratio: 4/3; border-radius: 6px; object-fit: cover; box-shadow: 0 0 0 1px rgba(15,24,21,.1), 0 3px 7px -2px rgba(15,24,21,.22); }
+.flag-emoji { font-size: 24px; line-height: 1; }
 * { box-sizing: border-box; }
 body { min-width: 320px; min-height: 100vh; margin: 0; background: var(--canvas); }
 button, input, select, textarea { font: inherit; }
