@@ -1,0 +1,24 @@
+{
+  "name": "chatgpt-team-checkout",
+  "version": "1.2.0",
+  "type": "module",
+  "private": true,
+  "description": "ChatGPT Team checkout link generator - Cloudflare Worker + static frontend",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "wrangler deploy --dry-run",
+    "test": "node --test test/*.test.mjs",
+    "relay": "node relay/server.mjs",
+    "relay:dev": "node --env-file=.relay.env relay/server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "undici": "^6.21.3"
+  },
+  "devDependencies": {
+    "wrangler": "^4.127.1"
+  }
+}

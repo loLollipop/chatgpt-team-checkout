@@ -1,0 +1,5 @@
+# 复制为 .dev.vars，仅供 wrangler dev 使用。不要提交真实密钥。
+COUNTRY_PROXY_CONFIG='{"US":{"url":"http://127.0.0.1:8790/forward","token":"replace-with-relay-token"},"EG":{"url":"http://127.0.0.1:8790/forward","token":"replace-with-relay-token"},"GB":{"url":"http://127.0.0.1:8790/forward","token":"replace-with-relay-token"},"PH":{"url":"http://127.0.0.1:8790/forward","token":"replace-with-relay-token"},"JP":{"url":"http://127.0.0.1:8790/forward","token":"replace-with-relay-token"},"TH":{"url":"http://127.0.0.1:8790/forward","token":"replace-with-relay-token"},"IN":{"url":"http://127.0.0.1:8790/forward","token":"replace-with-relay-token"},"SE":{"url":"http://127.0.0.1:8790/forward","token":"replace-with-relay-token"}}'
+ALLOW_DIRECT_CHECKOUT=false
+ADMIN_TOKEN=replace-with-a-long-random-admin-token
+CDK_HASH_PEPPER=replace-with-another-long-random-secret

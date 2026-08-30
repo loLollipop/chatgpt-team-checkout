@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <meta name="theme-color" content="#f4f1e9" />
+  <title>ChatGPT Team 支付长链生成器</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="head">
+      <div class="brand" aria-label="ChatGPT Team Checkout">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" role="img">
+            <path d="M6.8 9.7 16 4.4l9.2 5.3v10.6L16 25.6l-9.2-5.3V9.7Z" />
+            <path d="m11.1 12.1 4.9-2.8 4.9 2.8v5.7L16 20.6l-4.9-2.8v-5.7Z" />
+          </svg>
+        </span>
+        <div>
+          <p class="eyebrow">TEAM CHECKOUT ROUTER</p>
+          <h1>支付长链生成器</h1>
+        </div>
+      </div>
+      <p class="sub">选择地区后，结算请求会通过该国家在后台配置的专属出口转发。</p>
+    </header>
+
+    <form id="checkout-form" class="card" novalidate>
+      <section class="access-gate" aria-labelledby="cdk-title">
+        <div class="access-copy">
+          <p class="step">01 / 验证使用授权</p>
+          <h2 id="cdk-title">CDK 通行验证</h2>
+          <p>输入管理员发放的 CDK，通过校核后才能选择地区并生成支付链。</p>
+        </div>
+        <div class="cdk-entry">
+          <label class="sr-only" for="cdk-input">CDK</label>
+          <div class="cdk-control-wrap">
+            <span class="cdk-key" aria-hidden="true">◆</span>
+            <input
+              id="cdk-input"
+              class="cdk-input"
+              type="text"
+              inputmode="text"
+              maxlength="19"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="XXXX-XXXX-XXXX-XXXX"
+            />
+            <button id="cdk-verify-btn" class="cdk-verify-btn" type="button">
+              <span class="cdk-verify-label">校核 CDK</span>
+              <span class="cdk-spinner" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div id="cdk-status" class="cdk-status" data-state="locked" aria-live="polite">
+            <span class="cdk-status-dot" aria-hidden="true"></span>
+            <span class="cdk-status-text">等待验证，下面的工具暂未解锁</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="divider access-divider" aria-hidden="true"></div>
+
+      <div id="tool-content" class="tool-content is-locked" aria-disabled="true">
+      <section class="country-section" aria-labelledby="country-title">
+        <div class="section-head">
+          <div>
+            <p class="step">02 / 选择结算地区</p>
+            <h2 id="country-title">快速地区</h2>
+          </div>
+          <div id="proxy-overview" class="proxy-overview" aria-live="polite">正在读取代理配置…</div>
+        </div>
+
+        <div
+          id="country-cards"
+          class="country-grid is-loading"
+          role="radiogroup"
+          aria-label="国家或地区"
+          aria-busy="true"
+        >
+          <div class="country-skeleton"></div>
+          <div class="country-skeleton"></div>
+          <div class="country-skeleton"></div>
+          <div class="country-skeleton"></div>
+          <div class="country-skeleton"></div>
+          <div class="country-skeleton"></div>
+        </div>
+        <p id="country-selection" class="selection-line" aria-live="polite"></p>
+      </section>
+
+      <div class="divider" aria-hidden="true"></div>
+
+      <section aria-labelledby="details-title">
+        <div class="section-head details-head">
+          <div>
+            <p class="step">03 / 填写结算信息</p>
+            <h2 id="details-title">生成设置</h2>
+          </div>
+          <span class="privacy-chip">
+            <span class="privacy-dot" aria-hidden="true"></span>
+            Token 不落盘
+          </span>
+        </div>
+
+        <div class="field token-field">
+          <label class="label" for="token-input">
+            <span>Access Token</span>
+            <span class="hint">支持 eyJ… / Bearer eyJ… / session JSON</span>
+          </label>
+          <textarea
+            id="token-input"
+            class="control mono"
+            rows="3"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="eyJhbGciOi… 或 { &quot;accessToken&quot;: &quot;eyJ…&quot; }"
+          ></textarea>
+          <div id="token-meta" class="meta" data-state="empty">未输入</div>
+        </div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label class="label" for="workspace-name">
+              <span>新建空间名</span>
+              <span class="hint">最多 80 字符</span>
+            </label>
+            <input id="workspace-name" class="control" type="text" value="myWorkspace" maxlength="80" />
+          </div>
+
+          <div class="field">
+            <label class="label" for="seat-quantity">
+              <span>席位</span>
+              <span class="hint">最少 2 席</span>
+            </label>
+            <input id="seat-quantity" class="control mono" type="number" min="2" max="999" step="1" value="2" />
+          </div>
+
+          <div class="field form-span-2">
+            <label class="label" for="promo-input">
+              <span>优惠码 <span class="optional">（可选）</span></span>
+              <span class="hint">留空则不传 promo_code</span>
+            </label>
+            <input id="promo-input" class="control mono" type="text" autocomplete="off" placeholder="例如 SPRING50" />
+          </div>
+        </div>
+
+        <label class="check">
+          <input id="auto-open" type="checkbox" />
+          <span class="check-box" aria-hidden="true"></span>
+          <span>生成成功后自动打开支付页面</span>
+        </label>
+
+        <div class="actions">
+          <button id="generate-btn" class="primary" type="submit">
+            <span class="spinner" aria-hidden="true"></span>
+            <span class="label-text">生成 Team 支付长链</span>
+            <svg class="button-arrow" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M4 10h11m-4-4 4 4-4 4" />
+            </svg>
+          </button>
+          <button id="clear-btn" class="ghost" type="button">重置</button>
+        </div>
+      </section>
+
+      <div id="result" class="result" role="status" aria-live="polite"></div>
+      </div>
+    </form>
+
+    <footer class="foot">
+      <span>Cloudflare Worker</span>
+      <span aria-hidden="true">·</span>
+      <span>按国家隔离出口</span>
+      <span aria-hidden="true">·</span>
+      <span>CDK 哈希存储</span>
+      <span aria-hidden="true">·</span>
+      <a href="/admin">管理后台</a>
+    </footer>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

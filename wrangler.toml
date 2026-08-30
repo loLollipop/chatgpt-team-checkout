@@ -1,0 +1,15 @@
+name = "chatgpt-team-checkout"
+main = "src/worker.js"
+compatibility_date = "2024-12-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# 首次部署前运行 `npx wrangler d1 create chatgpt-team-checkout-db`，
+# 然后用命令输出的真实 ID 替换下面的占位值。
+[[d1_databases]]
+binding = "DB"
+database_name = "chatgpt-team-checkout-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"

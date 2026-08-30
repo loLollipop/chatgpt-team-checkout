@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <meta name="theme-color" content="#17201b" />
+  <title>CDK 管理后台</title>
+  <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./admin.css" />
+</head>
+<body class="admin-body">
+  <main class="admin-shell">
+    <header class="admin-head">
+      <a class="admin-brand" href="/" aria-label="返回支付长链生成器">
+        <span class="admin-brand-mark" aria-hidden="true">◆</span>
+        <span>
+          <small>CHECKOUT CONTROL</small>
+          <strong>CDK 管理后台</strong>
+        </span>
+      </a>
+      <div class="admin-head-actions">
+        <span id="admin-session" class="admin-session" hidden><i></i>管理会话已连接</span>
+        <button id="logout-btn" class="admin-text-btn" type="button" hidden>退出管理</button>
+        <a class="admin-text-link" href="/">返回生成器 ↗</a>
+      </div>
+    </header>
+
+    <section id="login-panel" class="login-panel" aria-labelledby="login-title">
+      <div class="login-graphic" aria-hidden="true">
+        <span class="orbit orbit-one"></span>
+        <span class="orbit orbit-two"></span>
+        <span class="login-glyph">◆</span>
+      </div>
+      <div class="login-content">
+        <p class="admin-kicker">RESTRICTED ACCESS</p>
+        <h1 id="login-title">验证管理员身份</h1>
+        <p>输入 Worker 后台设置的 ADMIN_TOKEN。凭据只保存在当前页面内存中，关闭或刷新页面后自动清除。</p>
+        <form id="login-form" class="admin-login-form">
+          <label for="admin-token">管理 Token</label>
+          <div class="admin-token-row">
+            <input id="admin-token" type="password" autocomplete="off" placeholder="输入 ADMIN_TOKEN" required />
+            <button id="login-btn" type="submit">进入控制台</button>
+          </div>
+          <p id="login-message" class="admin-message" aria-live="polite"></p>
+        </form>
+      </div>
+    </section>
+
+    <div id="admin-dashboard" class="admin-dashboard" hidden>
+      <section class="dashboard-title-row">
+        <div>
+          <p class="admin-kicker">LICENSE INVENTORY</p>
+          <h1>授权码控制台</h1>
+          <p>生成、追踪和吊销支付工具的使用权限。</p>
+        </div>
+        <button id="refresh-btn" class="admin-outline-btn" type="button">↻ 刷新数据</button>
+      </section>
+
+      <section class="stat-grid" aria-label="CDK 统计">
+        <article class="stat-card stat-total"><span>记录总数</span><strong id="stat-total">0</strong><small>当前列表</small></article>
+        <article class="stat-card stat-active"><span>有效授权</span><strong id="stat-active">0</strong><small>可立即使用</small></article>
+        <article class="stat-card"><span>次数耗尽</span><strong id="stat-exhausted">0</strong><small>达到上限</small></article>
+        <article class="stat-card"><span>失效记录</span><strong id="stat-inactive">0</strong><small>过期或吊销</small></article>
+      </section>
+
+      <section class="admin-workspace">
+        <article class="admin-panel generator-panel">
+          <div class="panel-heading">
+            <span class="panel-number">01</span>
+            <div><h2>签发新 CDK</h2><p>明文授权码仅在生成后展示一次。</p></div>
+          </div>
+          <form id="generate-form" class="generate-form">
+            <label class="admin-field admin-field-wide">
+              <span>备注</span>
+              <input id="cdk-label" type="text" maxlength="80" placeholder="例如：8 月客户 A" />
+            </label>
+            <label class="admin-field">
+              <span>生成数量</span>
+              <input id="cdk-count" type="number" min="1" max="50" value="1" required />
+              <small>单次最多 50 个</small>
+            </label>
+            <label class="admin-field">
+              <span>每个可用次数</span>
+              <input id="cdk-max-uses" type="number" min="1" max="100000" value="10" required />
+              <small>每次生成支付链扣 1 次</small>
+            </label>
+            <label class="admin-field admin-field-wide">
+              <span>有效天数</span>
+              <input id="cdk-expiry" type="number" min="0" max="3650" value="30" required />
+              <small>填写 0 表示长期有效</small>
+            </label>
+            <button id="generate-cdk-btn" class="admin-primary-btn" type="submit">生成 CDK</button>
+            <p id="generate-message" class="admin-message admin-field-wide" aria-live="polite"></p>
+          </form>
+        </article>
+
+        <article id="generated-panel" class="admin-panel generated-panel" hidden>
+          <div class="panel-heading generated-heading">
+            <span class="panel-number">✓</span>
+            <div><h2>本次生成结果</h2><p>请立即复制保存，刷新后无法再次查看明文。</p></div>
+            <button id="copy-all-btn" class="admin-outline-btn" type="button">复制全部</button>
+          </div>
+          <div id="generated-codes" class="generated-codes"></div>
+        </article>
+      </section>
+
+      <section class="admin-panel inventory-panel">
+        <div class="panel-heading inventory-heading">
+          <span class="panel-number">02</span>
+          <div><h2>授权记录</h2><p>数据库只保留哈希与末四位，无法恢复完整 CDK。</p></div>
+        </div>
+        <div class="table-wrap">
+          <table class="cdk-table">
+            <thead>
+              <tr><th>CDK</th><th>备注</th><th>使用情况</th><th>有效期</th><th>状态</th><th><span class="sr-only">操作</span></th></tr>
+            </thead>
+            <tbody id="cdk-table-body"></tbody>
+          </table>
+          <div id="table-empty" class="table-empty" hidden>还没有 CDK，先签发第一批授权码。</div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="./admin.js"></script>
+</body>
+</html>
