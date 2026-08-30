@@ -17,6 +17,10 @@ const DEFAULT_COUNTRY = 'US';
 const MIN_SEATS = 2;
 const MAX_SEATS = 999;
 const REQUEST_TIMEOUT_MS = 25_000;
+const EXCHANGE_RATE_TIMEOUT_MS = 6_000;
+const EXCHANGE_RATE_CACHE_MS = 30 * 60 * 1000;
+const EXCHANGE_RATE_FALLBACK_CACHE_MS = 5 * 60 * 1000;
+const EXCHANGE_RATE_URL = 'https://open.er-api.com/v6/latest/USD';
 
 const SEAT_TYPES = [
   { code: 'default', name: '标准席位' },
@@ -29,17 +33,18 @@ const DEFAULT_BILLING_PERIOD = 'month';
 
 // 这里是前后端共用的唯一国家清单。代理地址不放在代码中，而由 Worker secret 配置。
 const COUNTRIES = [
-  { code: 'US', name: '美国', currency: 'USD', localPrice: '$25', usdPrice: '25.00', flag: '🇺🇸', pinyin: 'meiguo' },
-  { code: 'EG', name: '埃及', currency: 'EGP', localPrice: 'E£1,150', usdPrice: '22.88', flag: '🇪🇬', pinyin: 'aiji' },
-  { code: 'GB', name: '英国', currency: 'GBP', localPrice: '£18', usdPrice: '23.91', flag: '🇬🇧', pinyin: 'yingguo' },
-  { code: 'CL', name: '智利', currency: 'CLP', localPrice: '$21,600', usdPrice: '23.35', flag: '🇨🇱', pinyin: 'zhili' },
-  { code: 'PH', name: '菲律宾', currency: 'PHP', localPrice: '₱1,450', usdPrice: '23.29', flag: '🇵🇭', pinyin: 'feilvbin' },
-  { code: 'JP', name: '日本', currency: 'JPY', localPrice: '¥3,850', usdPrice: '26.18', flag: '🇯🇵', pinyin: 'riben' },
-  { code: 'TH', name: '泰国', currency: 'THB', localPrice: '฿780', usdPrice: '24.18', flag: '🇹🇭', pinyin: 'taiguo' },
-  { code: 'IN', name: '印度', currency: 'INR', localPrice: '₹2,250', usdPrice: '25.71', flag: '🇮🇳', pinyin: 'yindu' },
-  { code: 'SE', name: '瑞典', currency: 'SEK', localPrice: 'kr220', usdPrice: '23.10', flag: '🇸🇪', pinyin: 'ruidian' },
+  { code: 'US', name: '美国', currency: 'USD', localMonthlyAmount: 25, localPrice: '$25', usdPrice: '25.00', flag: '🇺🇸', pinyin: 'meiguo' },
+  { code: 'EG', name: '埃及', currency: 'EGP', localMonthlyAmount: 1150, localPrice: 'E£1,150', usdPrice: '22.88', flag: '🇪🇬', pinyin: 'aiji' },
+  { code: 'GB', name: '英国', currency: 'GBP', localMonthlyAmount: 18, localPrice: '£18', usdPrice: '23.91', flag: '🇬🇧', pinyin: 'yingguo' },
+  { code: 'CL', name: '智利', currency: 'CLP', localMonthlyAmount: 21600, localPrice: '$21,600', usdPrice: '23.35', flag: '🇨🇱', pinyin: 'zhili' },
+  { code: 'PH', name: '菲律宾', currency: 'PHP', localMonthlyAmount: 1450, localPrice: '₱1,450', usdPrice: '23.29', flag: '🇵🇭', pinyin: 'feilvbin' },
+  { code: 'JP', name: '日本', currency: 'JPY', localMonthlyAmount: 3850, localPrice: '¥3,850', usdPrice: '26.18', flag: '🇯🇵', pinyin: 'riben' },
+  { code: 'TH', name: '泰国', currency: 'THB', localMonthlyAmount: 780, localPrice: '฿780', usdPrice: '24.18', flag: '🇹🇭', pinyin: 'taiguo' },
+  { code: 'IN', name: '印度', currency: 'INR', localMonthlyAmount: 2250, localPrice: '₹2,250', usdPrice: '25.71', flag: '🇮🇳', pinyin: 'yindu' },
+  { code: 'SE', name: '瑞典', currency: 'SEK', localMonthlyAmount: 220, localPrice: 'kr220', usdPrice: '23.10', flag: '🇸🇪', pinyin: 'ruidian' },
 ];
 const COUNTRY_BY_CODE = Object.fromEntries(COUNTRIES.map((country) => [country.code, country]));
+let exchangeRateCache = { expiresAt: 0, payload: null };
 
 // 简易内存限速：每个 IP 60 秒最多 20 次（边缘实例足够个人/小团队）。
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -102,6 +107,83 @@ function jsonResponse(body, status = 200, extraHeaders = {}, env = {}) {
       ...extraHeaders,
     },
   });
+}
+
+function fallbackExchangeRates() {
+  return Object.fromEntries(COUNTRIES.map((country) => [
+    country.currency,
+    country.localMonthlyAmount / Number(country.usdPrice),
+  ]));
+}
+
+function supportedExchangeRates(rawRates) {
+  const currencies = new Set(COUNTRIES.map((country) => country.currency));
+  const rates = {};
+  for (const currency of currencies) {
+    const value = Number(rawRates?.[currency]);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    rates[currency] = value;
+  }
+  return rates;
+}
+
+async function liveExchangeRatePayload() {
+  const now = Date.now();
+  if (exchangeRateCache.payload && exchangeRateCache.expiresAt > now) {
+    return { ...exchangeRateCache.payload, cached: true };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EXCHANGE_RATE_TIMEOUT_MS);
+  try {
+    const response = await fetch(EXCHANGE_RATE_URL, {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+      cf: { cacheEverything: true, cacheTtl: Math.floor(EXCHANGE_RATE_CACHE_MS / 1000) },
+    });
+    if (!response.ok) throw new Error(`exchange_rate_http_${response.status}`);
+    const data = await response.json();
+    const rates = data?.result === 'success' ? supportedExchangeRates(data.rates) : null;
+    if (!rates) throw new Error('exchange_rate_payload_invalid');
+
+    const payload = {
+      ok: true,
+      base: 'USD',
+      rates,
+      live: true,
+      cached: false,
+      source: 'ExchangeRate-API',
+      updatedAt: Number(data.time_last_update_unix)
+        ? new Date(Number(data.time_last_update_unix) * 1000).toISOString()
+        : new Date(now).toISOString(),
+    };
+    exchangeRateCache = { payload, expiresAt: now + EXCHANGE_RATE_CACHE_MS };
+    return payload;
+  } catch {
+    const payload = {
+      ok: true,
+      base: 'USD',
+      rates: fallbackExchangeRates(),
+      live: false,
+      cached: false,
+      source: '内置参考汇率',
+      updatedAt: null,
+    };
+    exchangeRateCache = { payload, expiresAt: now + EXCHANGE_RATE_FALLBACK_CACHE_MS };
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function exchangeRateResponse(env) {
+  const payload = await liveExchangeRatePayload();
+  return jsonResponse(
+    payload,
+    200,
+    { 'Cache-Control': payload.live ? 'public, max-age=300, s-maxage=1800' : 'no-store' },
+    env
+  );
 }
 
 function constantTimeEqual(leftValue, rightValue) {
@@ -1012,6 +1094,9 @@ export default {
     }
     if (url.pathname === '/api/config' && request.method === 'GET') {
       return configurationResponse(env);
+    }
+    if (url.pathname === '/api/exchange-rates' && request.method === 'GET') {
+      return exchangeRateResponse(env);
     }
     if (url.pathname === '/api/cdk/verify' && request.method === 'POST') {
       return handleCdkVerify(request, env);

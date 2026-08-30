@@ -17,12 +17,17 @@ const elements = {
   countryMenu: $('#country-menu'),
   countrySearch: $('#country-search'),
   countryOptions: $('#country-options'),
+  countrySortLabel: $('#country-sort-label'),
   countryInput: $('#country'),
   priceFlag: $('#price-flag'),
   priceCountry: $('#price-country'),
   priceCurrency: $('#price-currency'),
   priceLocal: $('#price-local'),
   priceUsd: $('#price-usd'),
+  priceLocalLabel: $('#price-local-label'),
+  priceUsdLabel: $('#price-usd-label'),
+  fxStatus: $('#fx-status'),
+  fxNote: $('#fx-note'),
   seatDefault: $('#seat-default'),
   seatProlite: $('#seat-prolite'),
   seatTotalChip: $('#seat-total-chip'),
@@ -35,7 +40,9 @@ const elements = {
   summaryFlag: $('#summary-flag'),
   summaryCountry: $('#summary-country'),
   summaryRoute: $('#summary-route'),
+  summarySync: $('#summary-sync'),
   summaryBilling: $('#summary-billing'),
+  summaryPrice: $('#summary-price'),
   summaryDefault: $('#summary-default'),
   summaryProlite: $('#summary-prolite'),
   summaryTotal: $('#summary-total'),
@@ -80,6 +87,8 @@ const state = {
   activeCdk: '',
   country: null,
   tokenVisible: false,
+  exchange: { status: 'loading', rates: null, live: false, source: '', updatedAt: null },
+  exchangePromise: null,
 };
 
 function setStatus(element, message = '', type = '') {
@@ -168,11 +177,38 @@ async function loadConfig() {
   if (!config.cdkServiceReady) throw new Error('CDK 服务尚未就绪，请联系管理员。');
   state.config = config;
   renderCountryOptions('');
-  const preferred = config.countries.find((country) => country.code === config.defaultCountry && country.proxyConfigured)
-    || config.countries.find((country) => country.proxyConfigured)
+  const preferred = sortedCountries().find((country) => country.proxyConfigured)
+    || config.countries.find((country) => country.code === config.defaultCountry && country.proxyConfigured)
     || config.countries[0];
   if (preferred) selectCountry(preferred.code);
+  loadExchangeRates();
   return config;
+}
+
+async function loadExchangeRates() {
+  if (state.exchangePromise) return state.exchangePromise;
+  state.exchange.status = 'loading';
+  renderExchangeStatus();
+  state.exchangePromise = requestJson('/api/exchange-rates', { method: 'GET', headers: {} })
+    .then((data) => {
+      state.exchange = {
+        status: data.live ? 'live' : 'fallback',
+        rates: data.rates || null,
+        live: Boolean(data.live),
+        source: data.source || '',
+        updatedAt: data.updatedAt || null,
+      };
+    })
+    .catch(() => {
+      state.exchange = { status: 'fallback', rates: null, live: false, source: '内置参考汇率', updatedAt: null };
+    })
+    .finally(() => {
+      state.exchangePromise = null;
+      renderExchangeStatus();
+      renderCountryOptions(elements.countrySearch.value);
+      renderPricing();
+    });
+  return state.exchangePromise;
 }
 
 function countryMatches(country, query) {
@@ -182,9 +218,89 @@ function countryMatches(country, query) {
     .some((value) => String(value || '').toLowerCase().includes(normalized));
 }
 
+function billingMultiplier() {
+  return currentBillingPeriod() === 'year' ? 12 : 1;
+}
+
+function countryPrice(country) {
+  const multiplier = billingMultiplier();
+  const monthlyLocal = Number(country.localMonthlyAmount);
+  const fallbackUsd = Number(country.usdPrice);
+  const local = Number.isFinite(monthlyLocal) ? monthlyLocal * multiplier : 0;
+  const exchangeRate = Number(state.exchange.rates?.[country.currency]);
+  const usd = exchangeRate > 0 && local > 0 ? local / exchangeRate : fallbackUsd * multiplier;
+  return { local, usd: Number.isFinite(usd) ? usd : Number.POSITIVE_INFINITY };
+}
+
+function sortedCountries() {
+  return [...(state.config?.countries || [])].sort((left, right) => {
+    const priceDifference = countryPrice(left).usd - countryPrice(right).usd;
+    return Math.abs(priceDifference) > 0.001 ? priceDifference : left.name.localeCompare(right.name, 'zh-CN');
+  });
+}
+
+function formatLocalAmount(country, amount) {
+  if (!Number.isFinite(amount)) return '—';
+  try {
+    return new Intl.NumberFormat('zh-CN', {
+      style: 'currency',
+      currency: country.currency,
+      currencyDisplay: 'narrowSymbol',
+      maximumFractionDigits: ['CLP', 'JPY'].includes(country.currency) ? 0 : 2,
+    }).format(amount);
+  } catch {
+    return `${country.currency} ${amount.toLocaleString('zh-CN')}`;
+  }
+}
+
+function formatUsdAmount(amount) {
+  return Number.isFinite(amount)
+    ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount)
+    : '—';
+}
+
+function setSyncBadge(element, text, status) {
+  if (!element) return;
+  element.dataset.state = status;
+  const dot = document.createElement('i');
+  dot.className = 'live-dot';
+  dot.setAttribute('aria-hidden', 'true');
+  element.replaceChildren(dot, document.createTextNode(text));
+}
+
+function exchangeTimestamp() {
+  if (!state.exchange.updatedAt) return '';
+  const date = new Date(state.exchange.updatedAt);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
+function renderExchangeStatus() {
+  const timestamp = exchangeTimestamp();
+  if (state.exchange.status === 'live') {
+    const label = timestamp ? `汇率已同步 · ${timestamp}` : '汇率已实时同步';
+    setSyncBadge(elements.fxStatus, label, 'live');
+    setSyncBadge(elements.summarySync, '实时汇率', 'live');
+    elements.fxNote.textContent = `汇率来源：${state.exchange.source || '实时汇率服务'}。价格为单席参考值，最终以 ChatGPT Checkout 为准。`;
+    return;
+  }
+  if (state.exchange.status === 'fallback') {
+    setSyncBadge(elements.fxStatus, '当前使用参考汇率', 'fallback');
+    setSyncBadge(elements.summarySync, '参考汇率', 'fallback');
+    elements.fxNote.textContent = '实时汇率暂时不可用，已自动回退到内置参考价；最终金额以 ChatGPT Checkout 为准。';
+    return;
+  }
+  setSyncBadge(elements.fxStatus, '正在同步汇率', 'loading');
+  setSyncBadge(elements.summarySync, '同步中', 'loading');
+}
+
 function renderCountryOptions(query = '') {
   elements.countryOptions.replaceChildren();
-  const countries = (state.config?.countries || []).filter((country) => countryMatches(country, query));
+  const allCountries = sortedCountries();
+  const ranks = new Map(allCountries.map((country, index) => [country.code, index + 1]));
+  const countries = allCountries.filter((country) => countryMatches(country, query));
+  elements.countrySortLabel.textContent = `按${currentBillingPeriod() === 'year' ? '年付' : '月付'}美元价升序`;
   if (!countries.length) {
     const empty = document.createElement('div');
     empty.className = 'country-empty';
@@ -201,6 +317,10 @@ function renderCountryOptions(query = '') {
     button.disabled = !country.proxyConfigured;
     button.dataset.country = country.code;
 
+    const rank = document.createElement('span');
+    rank.className = 'country-rank';
+    rank.textContent = String(ranks.get(country.code)).padStart(2, '0');
+
     const copy = document.createElement('span');
     copy.className = 'country-copy';
     const name = document.createElement('b');
@@ -210,12 +330,13 @@ function renderCountryOptions(query = '') {
     copy.append(name, currency);
     const prices = document.createElement('span');
     prices.className = 'country-price';
+    const price = countryPrice(country);
     const local = document.createElement('b');
-    local.textContent = country.localPrice;
+    local.textContent = formatLocalAmount(country, price.local);
     const usd = document.createElement('small');
-    usd.textContent = `≈ $${country.usdPrice} USD`;
+    usd.textContent = `≈ ${formatUsdAmount(price.usd)} USD`;
     prices.append(local, usd);
-    button.append(flagImage(country, 'flag-img'), copy, prices);
+    button.append(rank, flagImage(country, 'flag-img'), copy, prices);
     button.addEventListener('click', () => selectCountry(country.code));
     elements.countryOptions.append(button);
   });
@@ -235,17 +356,27 @@ function selectCountry(code) {
   meta.textContent = `${country.currency} · ${country.proxyConfigured ? '代理已配置' : '代理未配置'}`;
   copy.append(name, meta);
   elements.countryTriggerMain.append(flagImage(country, 'flag-img flag-img-sm'), copy);
-
-  elements.priceFlag.replaceChildren(flagImage(country, 'flag-img flag-img-lg'));
-  elements.priceCountry.textContent = `${country.name} · ${country.code}`;
-  elements.priceCurrency.textContent = `${country.currency} 自动结算`;
-  elements.priceLocal.textContent = country.localPrice;
-  elements.priceUsd.textContent = `$${country.usdPrice}`;
   elements.summaryFlag.replaceChildren(flagImage(country, 'flag-img flag-img-lg'));
   elements.summaryCountry.textContent = `${country.name} · ${country.currency}`;
   elements.summaryRoute.textContent = country.proxyConfigured ? '专属国家代理已就绪' : '该国家代理未配置';
+  renderPricing();
   closeCountryMenu();
   renderCountryOptions(elements.countrySearch.value);
+}
+
+function renderPricing() {
+  const country = state.country;
+  if (!country) return;
+  const annual = currentBillingPeriod() === 'year';
+  const price = countryPrice(country);
+  elements.priceFlag.replaceChildren(flagImage(country, 'flag-img flag-img-lg'));
+  elements.priceCountry.textContent = `${country.name} · ${country.code}`;
+  elements.priceCurrency.textContent = `${country.currency} 自动结算 · 单席参考`;
+  elements.priceLocalLabel.textContent = annual ? '当地年付参考' : '当地月付参考';
+  elements.priceUsdLabel.textContent = annual ? '年付折合美元' : '实时折合美元';
+  elements.priceLocal.textContent = formatLocalAmount(country, price.local);
+  elements.priceUsd.textContent = formatUsdAmount(price.usd);
+  elements.summaryPrice.textContent = formatUsdAmount(price.usd);
 }
 
 function openCountryMenu() {
@@ -287,6 +418,7 @@ function updateSummary() {
   elements.summaryProlite.textContent = String(seats.prolite);
   elements.summaryTotal.textContent = String(seats.total);
   elements.summaryBilling.textContent = currentBillingPeriod() === 'year' ? '年付' : '月付';
+  renderPricing();
   return valid;
 }
 
@@ -388,7 +520,10 @@ document.querySelectorAll('.stepper button').forEach((button) => {
     updateSummary();
   });
 });
-document.querySelectorAll('input[name="billing-period"]').forEach((input) => input.addEventListener('change', updateSummary));
+document.querySelectorAll('input[name="billing-period"]').forEach((input) => input.addEventListener('change', () => {
+  updateSummary();
+  renderCountryOptions(elements.countrySearch.value);
+}));
 
 elements.accessToken.classList.add('token-hidden');
 elements.toggleToken.addEventListener('click', () => {
@@ -465,6 +600,7 @@ elements.copyResult.addEventListener('click', async () => {
   }
 });
 
+renderExchangeStatus();
 updateSummary();
 loadConfig().catch((error) => setStatus(elements.cdkStatus, error.message || '初始配置加载失败。', 'error'));
 elements.cdkInput.focus();

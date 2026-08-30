@@ -317,10 +317,49 @@ test('config endpoint exposes readiness but never relay credentials', async () =
   assert.equal(data.countries.find((country) => country.code === 'US').proxyConfigured, true);
   assert.equal(data.countries.find((country) => country.code === 'JP').proxyConfigured, false);
   assert.equal(data.countries.find((country) => country.code === 'CL').currency, 'CLP');
+  assert.equal(data.countries.find((country) => country.code === 'CL').localMonthlyAmount, 21600);
   assert.equal(data.countries.find((country) => country.code === 'CL').usdPrice, '23.35');
   assert.equal(text.includes(relayUrl), false);
   assert.equal(text.includes(relayToken), false);
   assert.equal(text.includes(env.CDK_HASH_PEPPER), false);
+});
+
+test('exchange-rate endpoint returns only supported live USD rates', async () => {
+  const env = createEnv();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.equal(String(url), 'https://open.er-api.com/v6/latest/USD');
+    return new Response(JSON.stringify({
+      result: 'success',
+      time_last_update_unix: 1_788_134_400,
+      rates: {
+        USD: 1,
+        EGP: 50.5,
+        GBP: 0.75,
+        CLP: 925,
+        PHP: 58.2,
+        JPY: 147.1,
+        THB: 32.4,
+        INR: 87.7,
+        SEK: 9.45,
+        EUR: 0.86,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://checkout.example/api/exchange-rates'), env);
+    const data = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(data.live, true);
+    assert.equal(data.base, 'USD');
+    assert.equal(data.source, 'ExchangeRate-API');
+    assert.equal(data.rates.CLP, 925);
+    assert.equal(data.rates.EUR, undefined);
+    assert.equal(Object.keys(data.rates).length, 9);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('admin API requires its bearer token', async () => {
