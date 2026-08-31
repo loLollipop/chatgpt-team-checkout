@@ -34,7 +34,7 @@
             <span>验证并进入</span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12h15"/><path d="m13.5 6 6 6-6 6"/></svg>
           </button>
-          <p id="cdk-hint" class="field-hint">CDK 只保留在当前页面内存中，刷新后需要重新验证。</p>
+          <p id="cdk-hint" class="field-hint">验证成功后会在 CDK 有效期内安全保持登录；刷新页面无需重复输入。</p>
           <div id="cdk-status" class="inline-status" role="status" aria-live="polite"></div>
         </form>
         <div class="gate-trust" aria-label="安全说明">
@@ -154,11 +154,11 @@
                   <span id="fx-status" class="fx-status" data-state="loading"><i class="live-dot" aria-hidden="true"></i>正在同步汇率</span>
                 </div>
                 <div class="price-values">
-                  <span><small id="price-local-label">当地月付参考</small><b id="price-local">—</b></span>
+                  <span><small id="price-local-label">当地预计应付</small><b id="price-local">—</b></span>
                   <i class="price-divider" aria-hidden="true"></i>
-                  <span><small id="price-usd-label">实时折合美元</small><b id="price-usd">—</b></span>
+                  <span><small id="price-usd-label">预计应付美元</small><b id="price-usd">—</b></span>
                 </div>
-                <p id="fx-note" class="fx-note">价格为单席参考值，最终金额以 ChatGPT Checkout 页面为准。</p>
+                <p id="fx-note" class="fx-note">按官方 Business 席位价格估算，最终金额以 ChatGPT Checkout 页面为准。</p>
               </div>
             </section>
 
@@ -205,7 +205,7 @@
                 <label class="field-block" for="promo-code">
                   <span class="field-label">优惠码</span>
                   <input id="promo-code" type="text" maxlength="160" autocomplete="off" placeholder="例如 E3NW9QBJZXKNM9ZE" />
-                  <span class="field-hint">仅支持管理后台已登记的优惠码；提链成功后自动标记“已售出”，24 小时后清理。</span>
+                  <span id="promo-hint" class="field-hint">固定抵扣 $25，仅适用于月付订单中的标准席位。</span>
                 </label>
               </div>
             </section>
@@ -230,14 +230,15 @@
               </div>
               <dl>
                 <div><dt>付费周期</dt><dd id="summary-billing">月付</dd></div>
-                <div><dt>单席参考</dt><dd id="summary-price">—</dd></div>
                 <div><dt>标准席位</dt><dd id="summary-default">2</dd></div>
                 <div><dt>高级席位</dt><dd id="summary-prolite">0</dd></div>
-                <div class="summary-total"><dt>席位合计</dt><dd id="summary-total">2</dd></div>
+                <div><dt>优惠码</dt><dd id="summary-discount">未使用</dd></div>
+                <div><dt>席位合计</dt><dd id="summary-total">2</dd></div>
+                <div class="summary-total"><dt>预计应付</dt><dd id="summary-price">—</dd></div>
               </dl>
               <div class="summary-tip">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5"/><circle cx="12" cy="7.8" r=".7" fill="currentColor" stroke="none"/></svg>
-                <p>价格仅供地区对比参考，最终金额以 ChatGPT Checkout 页面为准。</p>
+                <p>标准与高级席位分别计价；优惠码只抵扣月付标准席位，最终以 ChatGPT Checkout 为准。</p>
               </div>
             </section>
 

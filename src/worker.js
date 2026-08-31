@@ -1,4 +1,4 @@
-import { createAdminCdk, createCdks, deleteCdk, listCdks, revokeCdk, verifyCdk } from './cdk.js';
+import { createAdminCdk, createCdks, deleteCdk, listCdks, revokeCdk, verifyCdk, verifyCdkId } from './cdk.js';
 import {
   deleteProxyRoute,
   getProxyRoute,
@@ -37,6 +37,18 @@ const DEFAULT_SEAT_TYPE = 'default';
 const SEAT_TYPE_BY_CODE = Object.fromEntries(SEAT_TYPES.map((seatType) => [seatType.code, seatType]));
 const BILLING_PERIODS = ['month', 'year'];
 const DEFAULT_BILLING_PERIOD = 'month';
+const BUSINESS_PRICING = {
+  sourceUrl: 'https://chatgpt.com/pricing/',
+  standard: { monthUsd: 25, yearUsd: 240 },
+  prolite: { monthUsd: 125, yearUsd: 1200 },
+  promoDiscountUsd: 25,
+  promoBillingPeriods: ['month'],
+  promoSeatTypes: ['default'],
+};
+const ADMIN_SESSION_COOKIE = 'team_admin_session';
+const CDK_SESSION_COOKIE = 'team_cdk_session';
+const ADMIN_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const ADMIN_CDK_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 // 这里是前后端共用的唯一国家清单。代理地址不放在代码中，而由 Worker secret 配置。
 const COUNTRIES = [
@@ -204,7 +216,73 @@ function constantTimeEqual(leftValue, rightValue) {
   return difference === 0;
 }
 
-function adminAuthorization(request, env) {
+function base64UrlEncode(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function base64UrlDecode(value) {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+async function sessionSignature(encodedPayload, secret) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(String(secret)),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(encodedPayload));
+  return base64UrlEncode(new Uint8Array(signature));
+}
+
+async function createSignedSession(type, values, secret, expiresAtMs) {
+  const payload = { type, ...values, exp: Math.floor(expiresAtMs / 1000) };
+  const encoded = base64UrlEncode(new TextEncoder().encode(JSON.stringify(payload)));
+  return encoded + '.' + await sessionSignature(encoded, secret);
+}
+
+async function verifySignedSession(value, type, secret) {
+  try {
+    const [encoded, receivedSignature, extra] = String(value || '').split('.');
+    if (!encoded || !receivedSignature || extra) return null;
+    const expectedSignature = await sessionSignature(encoded, secret);
+    if (!constantTimeEqual(receivedSignature, expectedSignature)) return null;
+    const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(encoded)));
+    if (payload?.type !== type || !Number.isFinite(Number(payload.exp)) || Number(payload.exp) <= Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function requestCookie(request, name) {
+  const cookie = request.headers.get('cookie') || '';
+  for (const part of cookie.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 1) continue;
+    if (part.slice(0, separator).trim() === name) return part.slice(separator + 1).trim();
+  }
+  return '';
+}
+
+function sessionCookie(request, name, value, expiresAtMs) {
+  const maxAge = Math.max(0, Math.floor((expiresAtMs - Date.now()) / 1000));
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return `${name}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
+}
+
+function clearSessionCookie(request, name) {
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return `${name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`;
+}
+
+function adminBearerAuthorization(request, env) {
   if (!env.ADMIN_TOKEN) return { ok: false, error: 'admin_not_configured', status: 503 };
   const authorization = request.headers.get('authorization') || '';
   const received = /^Bearer\s+(.+)$/i.exec(authorization)?.[1] || '';
@@ -212,6 +290,31 @@ function adminAuthorization(request, env) {
     return { ok: false, error: 'admin_unauthorized', status: 401 };
   }
   return { ok: true };
+}
+
+async function adminAuthorization(request, env) {
+  if (!env.ADMIN_TOKEN) return { ok: false, error: 'admin_not_configured', status: 503 };
+  const bearer = adminBearerAuthorization(request, env);
+  if (bearer.ok) return bearer;
+  const session = await verifySignedSession(
+    requestCookie(request, ADMIN_SESSION_COOKIE),
+    'admin',
+    env.ADMIN_TOKEN
+  );
+  return session
+    ? { ok: true, session }
+    : { ok: false, error: 'admin_unauthorized', status: 401 };
+}
+
+async function cdkSessionAuthorization(request, env, options = {}) {
+  if (!env.CDK_HASH_PEPPER) return { ok: false, error: 'cdk_service_not_configured' };
+  const session = await verifySignedSession(
+    requestCookie(request, CDK_SESSION_COOKIE),
+    'cdk',
+    env.CDK_HASH_PEPPER
+  );
+  if (!session || !Number.isInteger(Number(session.cdkId))) return { ok: false, error: 'cdk_invalid' };
+  return safeCdkOperation(() => verifyCdkId(Number(session.cdkId), env, options));
 }
 
 function cdkFailureStatus(error) {
@@ -452,6 +555,7 @@ async function configurationResponse(env) {
       seatTypes: SEAT_TYPES,
       defaultBillingPeriod: DEFAULT_BILLING_PERIOD,
       billingPeriods: BILLING_PERIODS,
+      pricing: BUSINESS_PRICING,
       proxyRequired: !directAllowed,
       configValid: !legacyProxyConfig.parseError && !commonRelay.parseError && !dynamic.error,
       cdkRequired: true,
@@ -491,6 +595,56 @@ async function handleCdkVerify(request, env) {
   }
   const result = await safeCdkOperation(() => verifyCdk(body.cdk, env));
   if (!result.ok) return cdkFailureResponse(result, env);
+  const expiresAtMs = result.unlimited
+    ? Date.now() + ADMIN_CDK_SESSION_TTL_MS
+    : new Date(result.expiresAt).getTime();
+  const session = await createSignedSession(
+    'cdk',
+    { cdkId: result.id },
+    env.CDK_HASH_PEPPER,
+    expiresAtMs
+  );
+  return jsonResponse(
+    {
+      ok: true,
+      label: result.label,
+      kind: result.kind,
+      unlimited: result.unlimited,
+      repeatable: result.repeatable,
+      maxUses: result.maxUses,
+      useCount: result.useCount,
+      remainingUses: result.remainingUses,
+      activatedAt: result.activatedAt,
+      expiresAt: result.expiresAt,
+    },
+    200,
+    {
+      'Cache-Control': 'no-store',
+      'Set-Cookie': sessionCookie(request, CDK_SESSION_COOKIE, session, expiresAtMs),
+    },
+    env
+  );
+}
+
+async function handleCdkSession(request, env) {
+  if (request.method === 'DELETE') {
+    return jsonResponse(
+      { ok: true },
+      200,
+      { 'Cache-Control': 'no-store', 'Set-Cookie': clearSessionCookie(request, CDK_SESSION_COOKIE) },
+      env
+    );
+  }
+  if (request.method !== 'GET') return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
+  const result = await cdkSessionAuthorization(request, env);
+  if (!result.ok) {
+    return jsonResponse(
+      { ok: false, error: result.error },
+      cdkFailureStatus(result.error),
+      { 'Cache-Control': 'no-store', 'Set-Cookie': clearSessionCookie(request, CDK_SESSION_COOKIE) },
+      env
+    );
+  }
   return jsonResponse(
     {
       ok: true,
@@ -510,8 +664,40 @@ async function handleCdkVerify(request, env) {
   );
 }
 
+async function handleAdminSession(request, env) {
+  if (request.method === 'GET') {
+    const authorization = await adminAuthorization(request, env);
+    if (!authorization.ok) return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
+    return jsonResponse({ ok: true }, 200, { 'Cache-Control': 'no-store' }, env);
+  }
+  if (request.method === 'POST') {
+    const authorization = adminBearerAuthorization(request, env);
+    if (!authorization.ok) return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
+    const expiresAtMs = Date.now() + ADMIN_SESSION_TTL_MS;
+    const session = await createSignedSession('admin', {}, env.ADMIN_TOKEN, expiresAtMs);
+    return jsonResponse(
+      { ok: true, expiresAt: new Date(expiresAtMs).toISOString() },
+      200,
+      {
+        'Cache-Control': 'no-store',
+        'Set-Cookie': sessionCookie(request, ADMIN_SESSION_COOKIE, session, expiresAtMs),
+      },
+      env
+    );
+  }
+  if (request.method === 'DELETE') {
+    return jsonResponse(
+      { ok: true },
+      200,
+      { 'Cache-Control': 'no-store', 'Set-Cookie': clearSessionCookie(request, ADMIN_SESSION_COOKIE) },
+      env
+    );
+  }
+  return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
+}
+
 async function handleAdminUniversalCdk(request, env) {
-  const authorization = adminAuthorization(request, env);
+  const authorization = await adminAuthorization(request, env);
   if (!authorization.ok) {
     return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
   }
@@ -530,7 +716,7 @@ async function handleAdminUniversalCdk(request, env) {
 }
 
 async function handleAdminCdks(request, env) {
-  const authorization = adminAuthorization(request, env);
+  const authorization = await adminAuthorization(request, env);
   if (!authorization.ok) {
     return jsonResponse(
       { ok: false, error: authorization.error },
@@ -568,7 +754,7 @@ async function handleAdminCdks(request, env) {
 }
 
 async function handleAdminPromos(request, env) {
-  const authorization = adminAuthorization(request, env);
+  const authorization = await adminAuthorization(request, env);
   if (!authorization.ok) {
     return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
   }
@@ -601,7 +787,7 @@ async function handleAdminPromos(request, env) {
 }
 
 async function handleAdminPromoItem(request, env, id, action = '') {
-  const authorization = adminAuthorization(request, env);
+  const authorization = await adminAuthorization(request, env);
   if (!authorization.ok) {
     return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
   }
@@ -619,7 +805,7 @@ async function handleAdminPromoItem(request, env, id, action = '') {
 }
 
 async function handleAdminCdkItem(request, env, id, action = '') {
-  const authorization = adminAuthorization(request, env);
+  const authorization = await adminAuthorization(request, env);
   if (!authorization.ok) {
     return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
   }
@@ -644,7 +830,7 @@ function validCountryCode(value) {
 }
 
 async function handleAdminProxies(request, env) {
-  const authorization = adminAuthorization(request, env);
+  const authorization = await adminAuthorization(request, env);
   if (!authorization.ok) {
     return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
   }
@@ -748,7 +934,7 @@ async function testDynamicProxy(country, env) {
 }
 
 async function handleAdminProxyItem(request, env, countryValue, action) {
-  const authorization = adminAuthorization(request, env);
+  const authorization = await adminAuthorization(request, env);
   if (!authorization.ok) {
     return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
   }
@@ -979,11 +1165,31 @@ async function handleTeamCheckout(request, env) {
     );
   }
 
-  // 先校验并激活 CDK，再检查优惠码白名单，避免把工具用于外部优惠码。
-  const cdkAuthorization = await safeCdkOperation(() => verifyCdk(body.cdk, env));
+  const requestedPromo = String(body.promoCode || '').trim();
+  if (requestedPromo && !BUSINESS_PRICING.promoBillingPeriods.includes(billingPeriod)) {
+    return jsonResponse(
+      { ok: false, error: 'promo_not_available_for_annual', supportedBillingPeriods: BUSINESS_PRICING.promoBillingPeriods },
+      400,
+      {},
+      env
+    );
+  }
+  if (requestedPromo && seatDefault < 1) {
+    return jsonResponse(
+      { ok: false, error: 'promo_requires_standard_seat', supportedSeatTypes: BUSINESS_PRICING.promoSeatTypes },
+      400,
+      {},
+      env
+    );
+  }
+
+  // 先校验 CDK 或已签名的 CDK 会话，再检查优惠码白名单，避免把工具用于外部优惠码。
+  const submittedCdk = String(body.cdk || '').trim();
+  const cdkAuthorization = submittedCdk
+    ? await safeCdkOperation(() => verifyCdk(submittedCdk, env))
+    : await cdkSessionAuthorization(request, env);
   if (!cdkAuthorization.ok) return cdkFailureResponse(cdkAuthorization, env);
 
-  const requestedPromo = String(body.promoCode || '').trim();
   const promoAuthorization = requestedPromo
     ? await safePromoOperation(() => validateRegisteredPromoCode(requestedPromo, env))
     : { ok: true, promoId: null, promoCode: '' };
@@ -1020,7 +1226,9 @@ async function handleTeamCheckout(request, env) {
     if (result.status >= 200 && result.status < 300) {
       const { url, sessionId } = resolveCheckoutUrl(result.data);
       if (url) {
-        const cdkUsage = await safeCdkOperation(() => verifyCdk(body.cdk, env, { consume: true }));
+        const cdkUsage = submittedCdk
+          ? await safeCdkOperation(() => verifyCdk(submittedCdk, env, { consume: true }))
+          : await cdkSessionAuthorization(request, env, { consume: true });
         const promoLifecycle = promoAuthorization.promoId
           ? await safePromoOperation(() => markPromoForAutoDelete(promoAuthorization.promoId, env))
           : { ok: true, autoDeleteAt: '' };
@@ -1134,6 +1342,12 @@ export default {
     }
     if (url.pathname === '/api/cdk/verify' && request.method === 'POST') {
       return handleCdkVerify(request, env);
+    }
+    if (url.pathname === '/api/cdk/session' && ['GET', 'DELETE'].includes(request.method)) {
+      return handleCdkSession(request, env);
+    }
+    if (url.pathname === '/api/admin/session' && ['GET', 'POST', 'DELETE'].includes(request.method)) {
+      return handleAdminSession(request, env);
     }
     if (url.pathname === '/api/admin/cdks' && ['GET', 'POST'].includes(request.method)) {
       return handleAdminCdks(request, env);

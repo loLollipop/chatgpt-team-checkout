@@ -106,9 +106,32 @@ class MemoryStatement {
   }
 
   async run() {
-    if (this.query.startsWith('INSERT OR IGNORE INTO promo_codes')) {
+    if (this.query.startsWith('DELETE FROM cdk_promo_assignments')) {
+      const [codeHash] = this.values;
+      const promo = this.database.promoRows.find((row) => row.code_hash === codeHash && row.deleted_at);
+      if (!promo) return { meta: { changes: 0 } };
+      const before = this.database.assignmentRows.length;
+      this.database.assignmentRows = this.database.assignmentRows.filter((row) => row.promo_code_id !== promo.id);
+      return { meta: { changes: before - this.database.assignmentRows.length } };
+    }
+
+    if (this.query.startsWith('INSERT INTO promo_codes')) {
       const [codeHash, encryptedCode, codeSuffix, country, batchName, importedAt] = this.values;
-      if (this.database.promoRows.some((row) => row.code_hash === codeHash)) return { meta: { changes: 0 } };
+      const existing = this.database.promoRows.find((row) => row.code_hash === codeHash);
+      if (existing) {
+        if (!existing.deleted_at) return { meta: { changes: 0 } };
+        Object.assign(existing, {
+          encrypted_code: encryptedCode,
+          code_suffix: codeSuffix,
+          country,
+          batch_name: batchName,
+          imported_at: importedAt,
+          redeemed_at: null,
+          auto_delete_at: null,
+          deleted_at: null,
+        });
+        return { meta: { changes: 1 } };
+      }
       const id = this.database.nextPromoId++;
       this.database.promoRows.push({ id, code_hash: codeHash, encrypted_code: encryptedCode, code_suffix: codeSuffix, country, batch_name: batchName, imported_at: importedAt, redeemed_at: null, auto_delete_at: null, deleted_at: null });
       return { meta: { changes: 1, last_row_id: id } };
@@ -349,6 +372,10 @@ async function saveProxy(env, country, proxyUrl) {
   });
 }
 
+function responseCookie(response) {
+  return String(response.headers.get('set-cookie') || '').split(';')[0];
+}
+
 test('config endpoint exposes readiness but never relay credentials', async () => {
   const env = createEnv();
   const response = await worker.fetch(new Request('https://checkout.example/api/config'), env);
@@ -362,6 +389,14 @@ test('config endpoint exposes readiness but never relay credentials', async () =
     { code: 'prolite', name: '高级席位' },
   ]);
   assert.deepEqual(data.billingPeriods, ['month', 'year']);
+  assert.deepEqual(data.pricing, {
+    sourceUrl: 'https://chatgpt.com/pricing/',
+    standard: { monthUsd: 25, yearUsd: 240 },
+    prolite: { monthUsd: 125, yearUsd: 1200 },
+    promoDiscountUsd: 25,
+    promoBillingPeriods: ['month'],
+    promoSeatTypes: ['default'],
+  });
   assert.equal(data.cdkRequired, true);
   assert.equal(data.cdkServiceReady, true);
   assert.equal(data.countries.find((country) => country.code === 'US').proxyConfigured, true);
@@ -430,6 +465,37 @@ test('admin API requires its bearer token', async () => {
 
   assert.equal(response.status, 401);
   assert.equal(data.error, 'admin_unauthorized');
+});
+
+test('admin login creates a persistent HttpOnly session cookie accepted after refresh', async () => {
+  const env = createEnv();
+  const loginResponse = await worker.fetch(new Request('https://checkout.example/api/admin/session', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + env.ADMIN_TOKEN },
+  }), env);
+  const cookie = responseCookie(loginResponse);
+  assert.equal(loginResponse.status, 200);
+  assert.match(cookie, /^team_admin_session=/);
+  assert.match(loginResponse.headers.get('set-cookie'), /HttpOnly/);
+  assert.match(loginResponse.headers.get('set-cookie'), /SameSite=Strict/);
+
+  const sessionResponse = await worker.fetch(new Request('https://checkout.example/api/admin/session', {
+    headers: { Cookie: cookie },
+  }), env);
+  assert.equal(sessionResponse.status, 200);
+  assert.equal((await sessionResponse.json()).ok, true);
+
+  const protectedResponse = await worker.fetch(new Request('https://checkout.example/api/admin/cdks', {
+    headers: { Cookie: cookie },
+  }), env);
+  assert.equal(protectedResponse.status, 200);
+
+  const logoutResponse = await worker.fetch(new Request('https://checkout.example/api/admin/session', {
+    method: 'DELETE',
+    headers: { Cookie: cookie },
+  }), env);
+  assert.equal(logoutResponse.status, 200);
+  assert.match(logoutResponse.headers.get('set-cookie'), /Max-Age=0/);
 });
 
 test('admin imports encrypted proxies and only lists masked metadata', async () => {
@@ -572,6 +638,36 @@ test('admin can manually delete an assigned promo', async () => {
   assert.equal((await listResponse.json()).records.length, 0);
 });
 
+test('a manually deleted promo can be reimported as fresh inventory without a duplicate error', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const promo = env.DB.promoRows[0];
+  const originalPromoId = promo.id;
+
+  const deleteResponse = await adminRequest(env, `/api/admin/promos/${promo.id}`, { method: 'DELETE' });
+  assert.equal(deleteResponse.status, 200);
+  assert.ok(promo.deleted_at);
+  assert.equal(env.DB.assignmentRows.length, 1);
+
+  const reimportResponse = await adminRequest(env, '/api/admin/promos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ batchName: 'reimported', codes: [issued.promoCode] }),
+  });
+  const reimported = await reimportResponse.json();
+  assert.equal(reimportResponse.status, 201);
+  assert.equal(reimported.importedCount, 1);
+  assert.equal(reimported.duplicateCount, 0);
+  assert.equal(env.DB.promoRows.length, 1);
+  assert.equal(env.DB.promoRows[0].id, originalPromoId);
+  assert.equal(env.DB.promoRows[0].deleted_at, null);
+  assert.equal(env.DB.promoRows[0].redeemed_at, null);
+  assert.equal(env.DB.promoRows[0].auto_delete_at, null);
+  assert.equal(env.DB.assignmentRows.length, 0);
+  const listResponse = await adminRequest(env, '/api/admin/promos?state=available');
+  assert.equal((await listResponse.json()).stats.available, 1);
+});
+
 test('CDK generation atomically assigns distinct global promo codes and exposes plaintext once', async () => {
   const env = createEnv();
   const promos = [
@@ -694,6 +790,59 @@ test('CDK verification activates a three-hour repeatable window without consumin
   assert.equal('code' in data, false);
 });
 
+test('an active CDK session survives refresh and can create checkout without resending plaintext CDK', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const verifyResponse = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cdk: issued.code }),
+  }), env);
+  const cookie = responseCookie(verifyResponse);
+  assert.equal(verifyResponse.status, 200);
+  assert.match(cookie, /^team_cdk_session=/);
+  assert.match(verifyResponse.headers.get('set-cookie'), /HttpOnly/);
+  assert.equal(cookie.includes(issued.code), false);
+
+  const refreshedSession = await worker.fetch(new Request('https://checkout.example/api/cdk/session', {
+    headers: { Cookie: cookie },
+  }), env);
+  const refreshed = await refreshedSession.json();
+  assert.equal(refreshedSession.status, 200);
+  assert.equal(refreshed.repeatable, true);
+  assert.equal(refreshed.useCount, 0);
+
+  const originalFetch = globalThis.fetch;
+  let checkoutPayload;
+  globalThis.fetch = async (_url, init) => {
+    checkoutPayload = JSON.parse(JSON.parse(init.body).body);
+    return new Response(JSON.stringify({ checkout_session_id: 'oaics_cookie_session' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    const checkoutResponse = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({
+        accessToken: 'eyJ' + 'a'.repeat(80),
+        country: 'US',
+        promoCode: issued.promoCode,
+        seatDefault: 2,
+        seatProlite: 0,
+        billingPeriod: 'month',
+      }),
+    }), env);
+    const checkout = await checkoutResponse.json();
+    assert.equal(checkoutResponse.status, 200);
+    assert.equal(checkout.cdkUseCount, 1);
+    assert.equal(checkoutPayload.promo_code, issued.promoCode);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('admin universal CDK is reusable, consumes no promo and rotates the previous code', async () => {
   const env = createEnv();
   const firstResponse = await adminRequest(env, '/api/admin/cdks/universal', {
@@ -793,7 +942,7 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
         promoCode: issued.promoCode,
         seatDefault: 5,
         seatProlite: 1,
-        billingPeriod: 'year',
+        billingPeriod: 'month',
         deviceId: 'test-device',
       }),
     });
@@ -826,11 +975,11 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
       { seat_type: 'default', quantity: 5 },
       { seat_type: 'prolite', quantity: 1 },
     ]);
-    assert.equal(checkoutPayload.team_plan_data.price_interval, 'year');
+    assert.equal(checkoutPayload.team_plan_data.price_interval, 'month');
     assert.equal(data.seatDefault, 5);
     assert.equal(data.seatProlite, 1);
     assert.equal(data.seatQuantity, 6);
-    assert.equal(data.billingPeriod, 'year');
+    assert.equal(data.billingPeriod, 'month');
 
     const secondResponse = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
       method: 'POST',
@@ -842,16 +991,18 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
         promoCode: issued.promoCode,
         seatDefault: 1,
         seatProlite: 1,
-        billingPeriod: 'year',
+        billingPeriod: 'month',
       }),
     }), env);
     const secondData = await secondResponse.json();
+    const secondCheckoutPayload = JSON.parse(JSON.parse(capturedInit.body).body);
     assert.equal(secondResponse.status, 200);
     assert.equal(secondData.country, 'JP');
     assert.equal(secondData.currency, 'JPY');
     assert.equal(secondData.cdkUseCount, 2);
     assert.equal(env.DB.rows[0].use_count, 2);
     assert.equal(env.DB.promoRows[0].auto_delete_at, firstAutoDeleteAt);
+    assert.equal(secondCheckoutPayload.promo_code, issued.promoCode);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1134,4 +1285,111 @@ test('checkout rejects unsupported billing periods without consuming a CDK', asy
   assert.equal(data.error, 'invalid_billing_period');
   assert.deepEqual(data.supportedBillingPeriods, ['month', 'year']);
   assert.equal(env.DB.rows[0].use_count, 0);
+});
+
+test('checkout rejects promo codes for annual billing before CDK consumption or upstream calls', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const originalFetch = globalThis.fetch;
+  let checkoutCalls = 0;
+  globalThis.fetch = async () => {
+    checkoutCalls += 1;
+    return new Response('{}', { status: 500 });
+  };
+  try {
+    const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cdk: issued.code,
+        accessToken: 'eyJ' + 'a'.repeat(80),
+        country: 'US',
+        promoCode: issued.promoCode,
+        seatDefault: 2,
+        seatProlite: 0,
+        billingPeriod: 'year',
+      }),
+    }), env);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, 'promo_not_available_for_annual');
+    assert.equal(env.DB.rows[0].use_count, 0);
+    assert.equal(checkoutCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('checkout rejects promo codes for advanced-only orders before CDK consumption or upstream calls', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const originalFetch = globalThis.fetch;
+  let checkoutCalls = 0;
+  globalThis.fetch = async () => {
+    checkoutCalls += 1;
+    return new Response('{}', { status: 500 });
+  };
+  try {
+    const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cdk: issued.code,
+        accessToken: 'eyJ' + 'a'.repeat(80),
+        country: 'US',
+        promoCode: issued.promoCode,
+        seatDefault: 0,
+        seatProlite: 2,
+        billingPeriod: 'month',
+      }),
+    }), env);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, 'promo_requires_standard_seat');
+    assert.equal(env.DB.rows[0].use_count, 0);
+    assert.equal(checkoutCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('checkout keeps official annual billing payloads available when no promo code is used', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const originalFetch = globalThis.fetch;
+  let checkoutPayload;
+  globalThis.fetch = async (_url, init) => {
+    const envelope = JSON.parse(init.body);
+    checkoutPayload = JSON.parse(envelope.body);
+    return new Response(JSON.stringify({ checkout_session_id: 'oaics_annual_mixed' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cdk: issued.code,
+        accessToken: 'eyJ' + 'a'.repeat(80),
+        country: 'US',
+        promoCode: '',
+        seatDefault: 5,
+        seatProlite: 1,
+        billingPeriod: 'year',
+      }),
+    }), env);
+    const data = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(data.billingPeriod, 'year');
+    assert.equal(data.promoSold, false);
+    assert.equal(checkoutPayload.team_plan_data.price_interval, 'year');
+    assert.equal(checkoutPayload.team_plan_data.seat_quantity, 6);
+    assert.deepEqual(checkoutPayload.team_plan_data.seat_quantities, [
+      { seat_type: 'default', quantity: 5 },
+      { seat_type: 'prolite', quantity: 1 },
+    ]);
+    assert.equal('promo_code' in checkoutPayload, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

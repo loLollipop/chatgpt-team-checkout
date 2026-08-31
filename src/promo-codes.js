@@ -120,14 +120,33 @@ export async function importPromoCodes(input, env) {
     encrypted: await encryptPromoCode(value, env.PROMO_ENCRYPTION_KEY, GLOBAL_PROMO_SCOPE),
     suffix: value.slice(-6),
   })));
-  const statements = prepared.map((item) => env.DB.prepare(
-    `INSERT OR IGNORE INTO promo_codes
-     (code_hash, encrypted_code, code_suffix, country, batch_name, imported_at, deleted_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)`
-  ).bind(item.hash, item.encrypted, item.suffix, GLOBAL_PROMO_SCOPE, batchName, importedAt));
+  const statements = prepared.flatMap((item) => [
+    env.DB.prepare(
+      `DELETE FROM cdk_promo_assignments
+       WHERE promo_code_id IN (
+         SELECT id FROM promo_codes WHERE code_hash = ?1 AND deleted_at IS NOT NULL
+       )`
+    ).bind(item.hash),
+    env.DB.prepare(
+      `INSERT INTO promo_codes
+       (code_hash, encrypted_code, code_suffix, country, batch_name, imported_at,
+        redeemed_at, auto_delete_at, deleted_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL)
+       ON CONFLICT(code_hash) DO UPDATE SET
+         encrypted_code = excluded.encrypted_code,
+         code_suffix = excluded.code_suffix,
+         country = excluded.country,
+         batch_name = excluded.batch_name,
+         imported_at = excluded.imported_at,
+         redeemed_at = NULL,
+         auto_delete_at = NULL,
+         deleted_at = NULL
+       WHERE promo_codes.deleted_at IS NOT NULL`
+    ).bind(item.hash, item.encrypted, item.suffix, GLOBAL_PROMO_SCOPE, batchName, importedAt),
+  ]);
   const results = await env.DB.batch(statements);
   const importedCount = results.reduce(
-    (count, result) => count + (Number(result?.meta?.changes || 0) === 1 ? 1 : 0),
+    (count, result, index) => count + (index % 2 === 1 && Number(result?.meta?.changes || 0) === 1 ? 1 : 0),
     0
   );
   return {

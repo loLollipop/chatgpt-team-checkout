@@ -23,7 +23,7 @@ const ERROR_MESSAGES = {
   invalid_cdk_count: 'CDK 生成数量必须为 1–50。', cdk_not_found_or_revoked: 'CDK 不存在或已停用。', cdk_not_found: 'CDK 不存在或已删除。',
   proxy_service_not_configured: '代理加密服务尚未配置。', proxy_database_error: '代理数据库操作失败。', invalid_proxy_import: '代理导入格式无效。', invalid_proxy_url: '代理 URL 格式不正确。', unsupported_proxy_protocol: '仅支持 HTTP / HTTPS 代理。', unsupported_country: '国家代码不受支持。', proxy_not_found: '该国家没有已导入的代理。', relay_not_configured: 'Relay 尚未配置。', relay_probe_unreachable: 'Relay 无法连接。', relay_probe_timeout: '代理测试超时。', proxy_test_failed: '代理测试失败。',
 };
-const STATE_LABELS = { pending: '待激活', active: '有效', exhausted: '已耗尽', expired: '已过期', revoked: '已停用', available: '可用', assigned: '已分配', sold: '已售出', healthy: '健康', failed: '异常', untested: '未测试' };
+const STATE_LABELS = { pending: '待激活', active: '有效', exhausted: '已耗尽', expired: '已过期', revoked: '已停用', available: '可用', assigned: '已分配', sold: '已使用', healthy: '健康', failed: '异常', untested: '未测试' };
 
 const state = { token: '', config: null, cdks: { records: [], stats: {} }, promos: { records: [], stats: {}, pagination: {} }, proxies: [], issued: [], fileCodes: [], cdkFilter: 'all', promoFilter: 'all', promoPage: 1, promoPageSize: 20 };
 
@@ -48,11 +48,18 @@ function formatDate(value, fallback = '长期') { if (!value) return fallback; c
 function setButtonLoading(button, loading, loadingText, idleText) { button.disabled = loading; button.textContent = loading ? loadingText : idleText; }
 
 async function adminFetch(path, options = {}) {
-  const response = await fetch(path, { ...options, headers: { Authorization: `Bearer ${state.token}`, 'Content-Type': 'application/json', ...(options.headers || {}) } });
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  });
   const data = await response.json().catch(() => ({ error: 'invalid_json' }));
   if (!response.ok) {
     const error = new Error(errorMessage(data)); error.data = data; error.status = response.status;
-    if (response.status === 401 && state.token) setTimeout(logout, 0);
+    if (response.status === 401 && path !== '/api/admin/session') setTimeout(showLogin, 0);
     throw error;
   }
   return data;
@@ -165,7 +172,7 @@ function renderCdks() {
   if (state.cdkFilter === 'inactive') records = records.filter((record) => !['pending', 'active'].includes(record.state));
   if (!records.length) { emptyRow(elements.cdkTableBody, 8, '暂无符合条件的 CDK'); return; }
   records.forEach((record) => {
-    const row = node('tr'); const code = visibleCode(record.code || record.maskedCode, Boolean(record.legacyCode)); const promoLocked = Boolean(record.promoLocked || String(record.promoCode || '').includes('•')); const promo = visibleCode(record.promoCode || '', promoLocked, record.promoSold ? '已售出 · 不可复制' : (record.promoDeleted ? '已删除' : '无法解密')); const type = node('span', `cdk-kind cdk-kind-${record.kind}`, record.kind === 'admin' ? '管理员通用' : '客户'); const progress = node('div', 'progress');
+    const row = node('tr'); const code = visibleCode(record.code || record.maskedCode, Boolean(record.legacyCode)); const promoLocked = Boolean(record.promoLocked || String(record.promoCode || '').includes('•')); const promo = visibleCode(record.promoCode || '', promoLocked, record.promoSold ? '已使用 · 禁止再次发放' : (record.promoDeleted ? '已删除' : '无法解密')); const type = node('span', `cdk-kind cdk-kind-${record.kind}`, record.kind === 'admin' ? '管理员通用' : '客户'); const progress = node('div', 'progress');
     if (record.unlimited) progress.append(node('small', '', `无限次 · 已用 ${record.useCount} 次`));
     else if (record.repeatable) progress.append(node('small', '', `${record.state === 'pending' ? '激活后' : '有效期内'}可重复 · 已成功 ${record.useCount} 次`));
     else { const bar = node('span'); const fill = node('i'); fill.style.width = `${Math.min(100, Math.round((record.useCount / Math.max(1, record.maxUses)) * 100))}%`; bar.append(fill); progress.append(bar, node('small', '', `${record.useCount}/${record.maxUses}`)); }
@@ -203,7 +210,7 @@ function renderPromos() {
   const page = Number(pagination.page || state.promoPage); const totalPages = Number(pagination.totalPages || 1); const total = Number(pagination.total || 0); state.promoPage = page;
   elements.promoPageInfo.textContent = `第 ${page} / ${totalPages} 页 · 共 ${total} 条`; elements.promoPrevPage.disabled = page <= 1; elements.promoNextPage.disabled = page >= totalPages;
   elements.promoTableBody.replaceChildren(); if (!records.length) { emptyRow(elements.promoTableBody, 7, '暂无符合条件的优惠码'); return; }
-  records.forEach((record) => { const row = node('tr'); const sold = record.state === 'sold'; const code = visibleCode(record.code || record.maskedCode, sold || String(record.code || '').includes('•'), sold ? '已售出 · 不可复制' : '无法解密'); const actions = node('div', 'table-actions'); const markSold = node('button', 'table-action table-action-neutral', sold ? '已售出' : '标记已售出'); markSold.type = 'button'; markSold.disabled = sold; if (!sold) markSold.addEventListener('click', () => markPromoSold(record)); const remove = node('button', 'table-action table-action-danger', '删除'); remove.type = 'button'; remove.addEventListener('click', () => deletePromo(record)); actions.append(markSold, remove);
+  records.forEach((record) => { const row = node('tr'); const sold = record.state === 'sold'; const code = visibleCode(record.code || record.maskedCode, sold || String(record.code || '').includes('•'), sold ? '已使用 · 禁止再次发放' : '无法解密'); const actions = node('div', 'table-actions'); const markSold = node('button', 'table-action table-action-neutral', sold ? '已使用' : '标记已使用'); markSold.type = 'button'; markSold.disabled = sold; if (!sold) markSold.addEventListener('click', () => markPromoSold(record)); const remove = node('button', 'table-action table-action-danger', '删除'); remove.type = 'button'; remove.addEventListener('click', () => deletePromo(record)); actions.append(markSold, remove);
     row.append(tableCell(code), tableCell(record.batchName || '—'), tableCell(formatDate(record.importedAt, '—')), tableCell(record.assignedCdk || '—'), tableCell(formatDate(record.autoDeleteAt, '—')), tableCell(stateBadge(record.state)), tableCell(actions)); elements.promoTableBody.append(row); });
 }
 
@@ -224,9 +231,24 @@ function navigate(view) {
 }
 function openSidebar() { elements.sidebar.classList.add('open'); elements.backdrop.hidden = false; }
 function closeSidebar() { elements.sidebar.classList.remove('open'); elements.backdrop.hidden = true; }
-function logout() { state.token = ''; elements.adminToken.value = ''; elements.app.hidden = true; elements.loginView.hidden = false; closeSidebar(); setStatus(elements.globalStatus); setTimeout(() => elements.adminToken.focus(), 50); }
+function showLogin() { state.token = ''; elements.adminToken.value = ''; elements.app.hidden = true; elements.loginView.hidden = false; closeSidebar(); setStatus(elements.globalStatus); setTimeout(() => elements.adminToken.focus(), 50); }
+async function logout() { await fetch('/api/admin/session', { method: 'DELETE' }).catch(() => {}); showLogin(); }
 
-elements.loginForm.addEventListener('submit', async (event) => { event.preventDefault(); const token = elements.adminToken.value; if (!token) { setStatus(elements.loginStatus, '请输入管理员密码。', 'error'); return; } state.token = token; setButtonLoading(elements.loginButton, true, '正在登录…', '进入管理后台'); setStatus(elements.loginStatus, '正在校验并加载管理数据…', 'info'); try { await loadAllData(); elements.adminToken.value = ''; elements.loginView.hidden = true; elements.app.hidden = false; setStatus(elements.loginStatus); navigate('overview'); } catch (error) { state.token = ''; setStatus(elements.loginStatus, error.message, 'error'); } finally { setButtonLoading(elements.loginButton, false, '正在登录…', '进入管理后台'); } });
+async function restoreAdminSession() {
+  try {
+    await adminFetch('/api/admin/session');
+    await loadAllData();
+    elements.loginView.hidden = true;
+    elements.app.hidden = false;
+    navigate('overview');
+    return true;
+  } catch {
+    showLogin();
+    return false;
+  }
+}
+
+elements.loginForm.addEventListener('submit', async (event) => { event.preventDefault(); const token = elements.adminToken.value; if (!token) { setStatus(elements.loginStatus, '请输入管理员密码。', 'error'); return; } state.token = token; setButtonLoading(elements.loginButton, true, '正在登录…', '进入管理后台'); setStatus(elements.loginStatus, '正在校验并创建安全登录会话…', 'info'); try { await adminFetch('/api/admin/session', { method: 'POST', body: '{}' }); state.token = ''; await loadAllData(); elements.adminToken.value = ''; elements.loginView.hidden = true; elements.app.hidden = false; setStatus(elements.loginStatus); navigate('overview'); } catch (error) { state.token = ''; setStatus(elements.loginStatus, error.message, 'error'); } finally { setButtonLoading(elements.loginButton, false, '正在登录…', '进入管理后台'); } });
 elements.logoutButton.addEventListener('click', logout); elements.menuButton.addEventListener('click', openSidebar); elements.backdrop.addEventListener('click', closeSidebar);
 $$('.nav-item').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view))); $$('[data-open-view]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.openView)));
 elements.refreshButton.addEventListener('click', async () => { setButtonLoading(elements.refreshButton, true, '刷新中…', '刷新数据'); setStatus(elements.globalStatus, '正在刷新全部数据…', 'info'); try { await loadAllData(); setStatus(elements.globalStatus, '数据已刷新。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } finally { setButtonLoading(elements.refreshButton, false, '刷新中…', '刷新数据'); } });
@@ -275,7 +297,7 @@ elements.promoForm.addEventListener('submit', async (event) => { event.preventDe
 $$('[data-promo-filter]').forEach((button) => button.addEventListener('click', async () => { state.promoFilter = button.dataset.promoFilter; $$('[data-promo-filter]').forEach((item) => item.classList.toggle('active', item === button)); try { await loadPromoPage(1); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }));
 elements.promoPrevPage.addEventListener('click', () => loadPromoPage(state.promoPage - 1).catch((error) => setStatus(elements.globalStatus, error.message, 'error')));
 elements.promoNextPage.addEventListener('click', () => loadPromoPage(state.promoPage + 1).catch((error) => setStatus(elements.globalStatus, error.message, 'error')));
-async function markPromoSold(record) { if (!confirm(`确定将优惠码 ${record.code || record.maskedCode} 标记为已售出吗？标记后不可再从后台查看或复制，并会在 24 小时后自动删除。`)) return; try { const result = await adminFetch(`/api/admin/promos/${record.id}/sold`, { method: 'POST' }); forgetIssuedPromo(record); await loadPromoPage(state.promoPage); setStatus(elements.globalStatus, `已标记为已售出，将于 ${formatDate(result.autoDeleteAt)} 自动删除。`, 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
+async function markPromoSold(record) { if (!confirm(`确定将优惠码 ${record.code || record.maskedCode} 标记为已使用吗？标记后管理员无法再次复制发放，但已绑定客户在 CDK 有效期内仍可重复提链。`)) return; try { const result = await adminFetch(`/api/admin/promos/${record.id}/sold`, { method: 'POST' }); forgetIssuedPromo(record); await loadPromoPage(state.promoPage); setStatus(elements.globalStatus, `已标记为已使用；绑定客户仍可重复提链，后台记录将于 ${formatDate(result.autoDeleteAt)} 清理。`, 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 async function deletePromo(record) { const detail = record.state === 'sold' ? '这会取消等待中的自动清理并立即删除。' : (record.assignedCdk ? `当前绑定 CDK ${record.assignedCdk}，删除不会解除或回收该 CDK。` : '删除后工作台将不再接受此优惠码。'); if (!confirm(`确定删除优惠码 ${record.code || record.maskedCode} 吗？\n${detail}`)) return; try { await adminFetch(`/api/admin/promos/${record.id}`, { method: 'DELETE' }); forgetIssuedPromo(record); await loadPromoPage(state.promoPage); setStatus(elements.globalStatus, '优惠码已从后台库存删除。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 
 function parseProxyBatch(value) { const text = String(value || '').trim(); if (!text) throw new Error('请粘贴代理配置。'); if (text.startsWith('{')) { const parsed = JSON.parse(text); if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('JSON 必须是国家到代理 URL 的对象。'); return parsed; } const routes = {}; text.split(/\r?\n/).forEach((line) => { const trimmed = line.trim(); if (!trimmed) return; const index = trimmed.indexOf('='); if (index < 2) throw new Error(`无法解析：${trimmed}`); routes[trimmed.slice(0, index).trim().toUpperCase()] = trimmed.slice(index + 1).trim(); }); return routes; }
@@ -285,4 +307,4 @@ function focusProxyCountry(code) { elements.proxyCountry.value = code; elements.
 async function testProxy(code, button) { setButtonLoading(button, true, '测试中…', '测试代理'); try { const result = await adminFetch(`/api/admin/proxies/${code}/test`, { method: 'POST' }); setStatus(elements.globalStatus, `${code} 代理正常：出口 ${result.exitIp}，延迟 ${result.latencyMs} ms。`, 'success'); await loadAllData(); } catch (error) { setStatus(elements.globalStatus, `${code}：${error.message}`, 'error'); await loadAllData().catch(() => {}); } finally { if (document.body.contains(button)) setButtonLoading(button, false, '测试中…', '测试代理'); } }
 async function deleteProxy(code) { if (!confirm(`确定删除 ${code} 国家代理吗？删除后该国家无法提链。`)) return; try { await adminFetch(`/api/admin/proxies/${code}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, `${code} 代理已删除。`, 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 
-renderIssued(); elements.adminToken.focus();
+renderIssued(); restoreAdminSession();

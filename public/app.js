@@ -34,6 +34,7 @@ const elements = {
   seatMessage: $('#seat-message'),
   workspaceName: $('#workspace-name'),
   promoCode: $('#promo-code'),
+  promoHint: $('#promo-hint'),
   formStatus: $('#form-status'),
   generateButton: $('#generate-button'),
   generateLabel: $('#generate-label'),
@@ -45,6 +46,7 @@ const elements = {
   summaryPrice: $('#summary-price'),
   summaryDefault: $('#summary-default'),
   summaryProlite: $('#summary-prolite'),
+  summaryDiscount: $('#summary-discount'),
   summaryTotal: $('#summary-total'),
   resultCard: $('#result-card'),
   resultUrl: $('#result-url'),
@@ -66,6 +68,8 @@ const ERROR_MESSAGES = {
   promo_not_registered: '该优惠码未在管理后台登记，无法使用本工作台提链。',
   promo_service_not_configured: '优惠码校验服务尚未配置，请联系管理员。',
   promo_database_error: '优惠码校验服务暂时不可用，请稍后再试。',
+  promo_not_available_for_annual: '优惠码不能用于年付订单，请切换为月付或清空优惠码。',
+  promo_requires_standard_seat: '优惠码只能抵扣标准席位，请至少选择 1 个标准席位或清空优惠码。',
   missing_access_token: '请先粘贴 Access Token。',
   access_token_too_short: 'Access Token 长度异常，请重新复制完整内容。',
   unsupported_country: '所选国家暂不支持。',
@@ -222,12 +226,24 @@ function countryMatches(country, query) {
     .some((value) => String(value || '').toLowerCase().includes(normalized));
 }
 
-function billingMultiplier() {
-  return currentBillingPeriod() === 'year' ? 12 : 1;
+function pricingConfig() {
+  return state.config?.pricing || {
+    standard: { monthUsd: 25, yearUsd: 240 },
+    prolite: { monthUsd: 125, yearUsd: 1200 },
+    promoDiscountUsd: 25,
+  };
 }
 
-function countryPrice(country) {
-  const multiplier = billingMultiplier();
+function officialSeatUsd(seatType) {
+  const period = currentBillingPeriod();
+  const prices = pricingConfig()[seatType] || pricingConfig().standard;
+  return Number(period === 'year' ? prices.yearUsd : prices.monthUsd);
+}
+
+function standardSeatPrice(country) {
+  const officialMonthlyUsd = Number(pricingConfig().standard.monthUsd) || 25;
+  const officialPeriodUsd = officialSeatUsd('standard');
+  const multiplier = officialPeriodUsd / officialMonthlyUsd;
   const monthlyLocal = Number(country.localMonthlyAmount);
   const fallbackUsd = Number(country.usdPrice);
   const local = Number.isFinite(monthlyLocal) ? monthlyLocal * multiplier : 0;
@@ -236,9 +252,51 @@ function countryPrice(country) {
   return { local, usd: Number.isFinite(usd) ? usd : Number.POSITIVE_INFINITY };
 }
 
+function seatPrice(country, seatType) {
+  const standard = standardSeatPrice(country);
+  const standardUsd = officialSeatUsd('standard');
+  const targetUsd = officialSeatUsd(seatType);
+  const multiplier = standardUsd > 0 ? targetUsd / standardUsd : 1;
+  return { local: standard.local * multiplier, usd: standard.usd * multiplier };
+}
+
+function promoSelection() {
+  const code = promoValue(elements.promoCode.value);
+  if (!code) return { code: '', eligible: false, reason: '' };
+  if (currentBillingPeriod() === 'year') return { code, eligible: false, reason: 'promo_not_available_for_annual' };
+  if (seatValues().standard < 1) return { code, eligible: false, reason: 'promo_requires_standard_seat' };
+  return { code, eligible: true, reason: '' };
+}
+
+function orderPrice(country) {
+  const seats = seatValues();
+  const standardSeat = seatPrice(country, 'standard');
+  const proliteSeat = seatPrice(country, 'prolite');
+  const standardSubtotal = { local: standardSeat.local * seats.standard, usd: standardSeat.usd * seats.standard };
+  const proliteSubtotal = { local: proliteSeat.local * seats.prolite, usd: proliteSeat.usd * seats.prolite };
+  const promo = promoSelection();
+  const discountUsd = promo.eligible
+    ? Math.min(Number(pricingConfig().promoDiscountUsd) || 25, standardSubtotal.usd)
+    : 0;
+  const usdToLocal = standardSeat.usd > 0 ? standardSeat.local / standardSeat.usd : 0;
+  const discountLocal = Math.min(discountUsd * usdToLocal, standardSubtotal.local);
+  return {
+    standardSeat,
+    proliteSeat,
+    standardSubtotal,
+    proliteSubtotal,
+    discount: { local: discountLocal, usd: discountUsd },
+    total: {
+      local: standardSubtotal.local + proliteSubtotal.local - discountLocal,
+      usd: standardSubtotal.usd + proliteSubtotal.usd - discountUsd,
+    },
+    promo,
+  };
+}
+
 function sortedCountries() {
   return [...(state.config?.countries || [])].sort((left, right) => {
-    const priceDifference = countryPrice(left).usd - countryPrice(right).usd;
+    const priceDifference = standardSeatPrice(left).usd - standardSeatPrice(right).usd;
     return Math.abs(priceDifference) > 0.001 ? priceDifference : left.name.localeCompare(right.name, 'zh-CN');
   });
 }
@@ -334,7 +392,7 @@ function renderCountryOptions(query = '') {
     copy.append(name, currency);
     const prices = document.createElement('span');
     prices.className = 'country-price';
-    const price = countryPrice(country);
+    const price = standardSeatPrice(country);
     const local = document.createElement('b');
     local.textContent = formatLocalAmount(country, price.local);
     const usd = document.createElement('small');
@@ -372,15 +430,40 @@ function renderPricing() {
   const country = state.country;
   if (!country) return;
   const annual = currentBillingPeriod() === 'year';
-  const price = countryPrice(country);
+  const price = orderPrice(country);
+  const seats = seatValues();
+  const standardOfficial = officialSeatUsd('standard');
+  const proliteOfficial = officialSeatUsd('prolite');
   elements.priceFlag.replaceChildren(flagImage(country, 'flag-img flag-img-lg'));
   elements.priceCountry.textContent = `${country.name} · ${country.code}`;
-  elements.priceCurrency.textContent = `${country.currency} 自动结算 · 单席参考`;
-  elements.priceLocalLabel.textContent = annual ? '当地年付参考' : '当地月付参考';
-  elements.priceUsdLabel.textContent = annual ? '年付折合美元' : '实时折合美元';
-  elements.priceLocal.textContent = formatLocalAmount(country, price.local);
-  elements.priceUsd.textContent = formatUsdAmount(price.usd);
-  elements.summaryPrice.textContent = formatUsdAmount(price.usd);
+  elements.priceCurrency.textContent = `${country.currency} 自动结算 · 标准/高级分别计价`;
+  elements.priceLocalLabel.textContent = annual ? '当地预计年付' : '当地预计月付';
+  elements.priceUsdLabel.textContent = annual ? '预计年付美元' : '预计月付美元';
+  elements.priceLocal.textContent = formatLocalAmount(country, price.total.local);
+  elements.priceUsd.textContent = formatUsdAmount(price.total.usd);
+  elements.summaryDefault.textContent = `${seats.standard} × ${formatUsdAmount(price.standardSeat.usd)} = ${formatUsdAmount(price.standardSubtotal.usd)}`;
+  elements.summaryProlite.textContent = `${seats.prolite} × ${formatUsdAmount(price.proliteSeat.usd)} = ${formatUsdAmount(price.proliteSubtotal.usd)}`;
+  elements.summaryDiscount.textContent = price.promo.eligible
+    ? `− ${formatUsdAmount(price.discount.usd)}`
+    : (price.promo.reason ? '当前订单不适用' : '未使用');
+  elements.summaryPrice.textContent = formatUsdAmount(price.total.usd);
+  const promoText = price.promo.eligible ? `，优惠码抵扣 ${formatUsdAmount(price.discount.usd)}` : '';
+  elements.fxNote.textContent = `官方基准：标准 ${formatUsdAmount(standardOfficial)}，高级 ${formatUsdAmount(proliteOfficial)}${annual ? '/席/年' : '/席/月'}${promoText}；地区金额按实时汇率估算，最终以 ChatGPT Checkout 为准。`;
+}
+
+function updatePromoState() {
+  const selection = promoSelection();
+  const annual = currentBillingPeriod() === 'year';
+  const hasStandardSeat = seatValues().standard > 0;
+  elements.promoCode.setAttribute('aria-invalid', String(Boolean(selection.reason)));
+  elements.promoHint.classList.toggle('seat-invalid', Boolean(selection.reason));
+  if (annual) {
+    elements.promoHint.textContent = '年付订单不支持优惠码；请切换月付后使用。';
+  } else if (!hasStandardSeat) {
+    elements.promoHint.textContent = '优惠码只能抵扣标准席位；纯高级席位订单不可使用。';
+  } else {
+    elements.promoHint.textContent = '固定抵扣 $25，仅作用于月付订单中的标准席位；高级席位不参与优惠。';
+  }
 }
 
 function openCountryMenu() {
@@ -422,6 +505,7 @@ function updateSummary() {
   elements.summaryProlite.textContent = String(seats.prolite);
   elements.summaryTotal.textContent = String(seats.total);
   elements.summaryBilling.textContent = currentBillingPeriod() === 'year' ? '年付' : '月付';
+  updatePromoState();
   renderPricing();
   return valid;
 }
@@ -463,7 +547,8 @@ function unlockWorkbench(verification) {
   setTimeout(() => elements.accessToken.focus(), 80);
 }
 
-function lockWorkbench() {
+function lockWorkbench({ clearSession = true } = {}) {
+  if (clearSession) fetch('/api/cdk/session', { method: 'DELETE' }).catch(() => {});
   state.activeCdk = '';
   elements.accessToken.value = '';
   elements.promoCode.value = '';
@@ -511,7 +596,7 @@ elements.cdkForm.addEventListener('submit', async (event) => {
   }
 });
 
-elements.lockButton.addEventListener('click', lockWorkbench);
+elements.lockButton.addEventListener('click', () => lockWorkbench());
 elements.countryTrigger.addEventListener('click', () => {
   if (elements.countryMenu.hidden) openCountryMenu(); else closeCountryMenu();
 });
@@ -545,6 +630,10 @@ document.querySelectorAll('input[name="billing-period"]').forEach((input) => inp
   updateSummary();
   renderCountryOptions(elements.countrySearch.value);
 }));
+elements.promoCode.addEventListener('input', () => {
+  updatePromoState();
+  renderPricing();
+});
 
 elements.accessToken.classList.add('token-hidden');
 elements.toggleToken.addEventListener('click', () => {
@@ -577,17 +666,23 @@ elements.form.addEventListener('submit', async (event) => {
   }
 
   const seats = seatValues();
+  const selectedPromo = promoSelection();
+  if (selectedPromo.reason) {
+    setStatus(elements.formStatus, ERROR_MESSAGES[selectedPromo.reason], 'error');
+    elements.promoCode.focus();
+    return;
+  }
   setLoading(elements.generateButton, true, elements.generateLabel, '正在创建 Checkout…', '生成支付长链');
   setStatus(elements.formStatus, '正在通过所选国家代理创建 ChatGPT Checkout…', 'info');
   try {
     const data = await requestJson('/api/checkout/team', {
       method: 'POST',
       body: JSON.stringify({
-        cdk: state.activeCdk,
+        cdk: state.activeCdk === 'session' ? '' : state.activeCdk,
         accessToken,
         country: state.country.code,
         workspaceName: elements.workspaceName.value.trim() || 'myWorkspace',
-        promoCode: promoValue(elements.promoCode.value),
+        promoCode: selectedPromo.code,
         seatDefault: seats.standard,
         seatProlite: seats.prolite,
         billingPeriod: currentBillingPeriod(),
@@ -624,7 +719,18 @@ elements.copyResult.addEventListener('click', async () => {
   }
 });
 
-renderExchangeStatus();
-updateSummary();
-loadConfig().catch((error) => setStatus(elements.cdkStatus, error.message || '初始配置加载失败。', 'error'));
-elements.cdkInput.focus();
+async function initializeWorkbench() {
+  renderExchangeStatus();
+  updateSummary();
+  try {
+    await loadConfig();
+    const verification = await requestJson('/api/cdk/session', { method: 'GET', headers: {} });
+    state.activeCdk = 'session';
+    unlockWorkbench(verification);
+  } catch (error) {
+    if (!state.config) setStatus(elements.cdkStatus, error.message || '初始配置加载失败。', 'error');
+    elements.cdkInput.focus();
+  }
+}
+
+initializeWorkbench();

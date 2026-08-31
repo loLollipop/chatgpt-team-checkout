@@ -129,38 +129,11 @@ function resultFromRecord(row, now = new Date()) {
 const CDK_SELECT_COLUMNS = `id, code_suffix, label, kind, max_uses, use_count,
   created_at, activated_at, expires_at, revoked_at, deleted_at, last_used_at`;
 
-export async function verifyCdk(value, env, options = {}) {
-  if (!databaseReady(env)) return unavailableResult();
-  const normalized = normalizeCdk(value);
-  if (!normalized) return { ok: false, error: 'cdk_invalid_format' };
-  const codeHash = await hashCdk(normalized, env.CDK_HASH_PEPPER);
-  const now = new Date();
-  const nowIso = now.toISOString();
-  let row = await env.DB.prepare(
-    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
-     WHERE code_hash = ?1 AND deleted_at IS NULL LIMIT 1`
-  ).bind(codeHash).first();
-  if (row && rowKind(row) === CDK_KIND_STANDARD && recordState(row, now) === 'pending') {
-    const activatedUntil = new Date(now.getTime() + STANDARD_CDK_ACTIVE_LIFETIME_MS).toISOString();
-    await env.DB.prepare(
-      `UPDATE cdks
-       SET activated_at = ?1, expires_at = ?2
-       WHERE id = ?3
-         AND kind = 'standard'
-         AND activated_at IS NULL
-         AND deleted_at IS NULL
-         AND revoked_at IS NULL
-         AND expires_at > ?1`
-    ).bind(nowIso, activatedUntil, row.id).run();
-    row = await env.DB.prepare(
-      `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
-       WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
-    ).bind(row.id).first();
-  }
-
+async function verifyCdkRow(row, env, options = {}, now = new Date()) {
   const current = resultFromRecord(row, now);
   if (!current.ok || !options.consume) return current;
 
+  const nowIso = now.toISOString();
   if (current.unlimited) {
     const update = await env.DB.prepare(
       `UPDATE cdks SET last_used_at = ?1
@@ -194,6 +167,49 @@ export async function verifyCdk(value, env, options = {}) {
      WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
   ).bind(row.id).first();
   return resultFromRecord(latest, new Date());
+}
+
+export async function verifyCdk(value, env, options = {}) {
+  if (!databaseReady(env)) return unavailableResult();
+  const normalized = normalizeCdk(value);
+  if (!normalized) return { ok: false, error: 'cdk_invalid_format' };
+  const codeHash = await hashCdk(normalized, env.CDK_HASH_PEPPER);
+  const now = new Date();
+  const nowIso = now.toISOString();
+  let row = await env.DB.prepare(
+    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
+     WHERE code_hash = ?1 AND deleted_at IS NULL LIMIT 1`
+  ).bind(codeHash).first();
+  if (row && rowKind(row) === CDK_KIND_STANDARD && recordState(row, now) === 'pending') {
+    const activatedUntil = new Date(now.getTime() + STANDARD_CDK_ACTIVE_LIFETIME_MS).toISOString();
+    await env.DB.prepare(
+      `UPDATE cdks
+       SET activated_at = ?1, expires_at = ?2
+       WHERE id = ?3
+         AND kind = 'standard'
+         AND activated_at IS NULL
+         AND deleted_at IS NULL
+         AND revoked_at IS NULL
+         AND expires_at > ?1`
+    ).bind(nowIso, activatedUntil, row.id).run();
+    row = await env.DB.prepare(
+      `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
+       WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
+    ).bind(row.id).first();
+  }
+
+  return verifyCdkRow(row, env, options, now);
+}
+
+export async function verifyCdkId(idValue, env, options = {}) {
+  if (!databaseReady(env)) return unavailableResult();
+  const id = Number(idValue);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'cdk_invalid' };
+  const row = await env.DB.prepare(
+    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
+     WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
+  ).bind(id).first();
+  return verifyCdkRow(row, env, options, new Date());
 }
 
 export async function createCdks(input, env) {

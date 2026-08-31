@@ -13,7 +13,7 @@
     <main id="login-view" class="login-view">
       <section class="login-card">
         <div class="login-brand"><span class="logo"><img src="/chatgpt-logo.svg" alt="ChatGPT 官方 Logo" /></span><span><b>ChatGPT Team</b><small>长链工作台 · 管理后台</small></span></div>
-        <div class="login-copy"><span class="eyebrow">Administrator</span><h1>欢迎回来</h1><p>登录后可管理 CDK、优惠码库存和国家代理。管理员密码只保留在当前页面内存中。</p></div>
+        <div class="login-copy"><span class="eyebrow">Administrator</span><h1>欢迎回来</h1><p>登录后可管理 CDK、优惠码库存和国家代理。验证成功后会安全保持登录，主动退出或凭证失效时才需重输密码。</p></div>
         <form id="login-form" novalidate>
           <label for="admin-token">管理员密码</label><input id="admin-token" type="password" autocomplete="current-password" placeholder="请输入后台密码" required />
           <button id="login-button" class="button button-primary" type="submit"><span>进入管理后台</span><span>→</span></button>
@@ -83,7 +83,7 @@
                     <div class="admin-code-copy"><span id="admin-cdk-caption">正在读取当前管理员 CDK</span><code id="admin-cdk-code">••••-••••-••••-••••</code></div>
                     <button id="admin-cdk-copy" type="button" disabled>复制 CDK</button>
                   </div>
-                  <p id="admin-cdk-hint" class="admin-cdk-hint">只有通过后台鉴权后才会解密显示，浏览器不会持久化保存。</p>
+                  <p id="admin-cdk-hint" class="admin-cdk-hint">只有通过后台鉴权后才会解密显示；后台会话由 HttpOnly Cookie 安全保持。</p>
                   <div class="admin-access-meta"><span><b>长期有效</b><small>除非手动停用或重新生成</small></span><span><b>无限次使用</b><small>不会占用全球优惠码库存</small></span></div>
                 </div>
                 <div class="control-card-actions"><button id="admin-cdk-create" class="button button-dark" type="button">生成管理员通用 CDK</button><div id="admin-cdk-status" class="status" role="status" aria-live="polite"></div></div>
@@ -94,7 +94,7 @@
           </section>
 
           <section class="view" data-view-panel="promos" hidden>
-            <div class="promo-stats stat-grid compact-stats"><article class="stat-card"><span>总库存</span><strong id="promo-total">—</strong><small>未删除的优惠码</small></article><article class="stat-card"><span>可分配</span><strong id="promo-available">—</strong><small>可立即用于 CDK</small></article><article class="stat-card"><span>已分配</span><strong id="promo-assigned">—</strong><small>已绑定 CDK</small></article><article class="stat-card"><span>已售出</span><strong id="promo-sold">—</strong><small>标记 24 小时后自动删除</small></article></div>
+            <div class="promo-stats stat-grid compact-stats"><article class="stat-card"><span>总库存</span><strong id="promo-total">—</strong><small>未删除的优惠码</small></article><article class="stat-card"><span>可分配</span><strong id="promo-available">—</strong><small>可立即用于 CDK</small></article><article class="stat-card"><span>已分配</span><strong id="promo-assigned">—</strong><small>已绑定 CDK</small></article><article class="stat-card"><span>已使用</span><strong id="promo-sold">—</strong><small>禁止管理员重复复制发放</small></article></div>
             <div class="page-grid promo-grid">
               <section class="panel"><div class="panel-heading"><div><span class="eyebrow">Import inventory</span><h3>导入全球优惠码</h3><p>所有优惠码进入同一个全球库存；表格内容只作为数据读取。</p></div></div><form id="promo-import-form" class="admin-form" novalidate>
                 <label>批次名称<input id="promo-batch" type="text" maxlength="80" value="全球优惠码" placeholder="例如：2026-08 批次" /></label>
@@ -102,9 +102,9 @@
                 <div class="upload-box"><input id="promo-file" type="file" accept=".xlsx,.xls,.csv,.txt" /><span class="upload-icon">⇧</span><div><b>或选择 Excel / CSV / TXT 文件</b><small id="promo-file-label">将读取所有非空单元格</small></div><button id="clear-promo-file" type="button" hidden>移除</button></div>
                 <button id="promo-import-button" class="button button-primary" type="submit">导入优惠码</button><div id="promo-import-status" class="status" role="status" aria-live="polite"></div>
               </form></section>
-              <section class="panel inventory-guide"><div class="panel-heading"><div><span class="eyebrow">Allocation rules</span><h3>优惠码同步规则</h3></div></div><ol><li><span>1</span><div><b>后台库存白名单</b><p>工作台只接受后台尚未删除的优惠码，外部优惠码会被拒绝。</p></div></li><li><span>2</span><div><b>自动标记已售出</b><p>工作台提链成功后立即标记；客户自行提链时可由管理员手动标记。</p></div></li><li><span>3</span><div><b>24 小时自动删除</b><p>已售出记录停止展示和复制完整代码，并在首次标记 24 小时后清理。</p></div></li></ol><div class="format-preview"><span>交付格式</span><pre>自助提链：https://你的站点/&#10;CDK：XXXX-XXXX-XXXX-XXXX&#10;优惠码：E3NW9QBJZXKNM9ZE</pre></div></section>
+              <section class="panel inventory-guide"><div class="panel-heading"><div><span class="eyebrow">Allocation rules</span><h3>优惠码同步规则</h3></div></div><ol><li><span>1</span><div><b>后台库存白名单</b><p>工作台只接受后台登记并绑定的优惠码，外部优惠码会被拒绝。</p></div></li><li><span>2</span><div><b>自动标记已使用</b><p>提链成功后隐藏完整代码，防止管理员再次复制发给其他用户。</p></div></li><li><span>3</span><div><b>客户仍可重复提链</b><p>标记不影响原客户使用；CDK 有效期内可继续换国家提链，直到上游提示优惠码不再符合条件。</p></div></li></ol><div class="format-preview"><span>交付格式</span><pre>自助提链：https://你的站点/&#10;CDK：XXXX-XXXX-XXXX-XXXX&#10;优惠码：E3NW9QBJZXKNM9ZE</pre></div></section>
             </div>
-            <section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">Global inventory</span><h3>全球优惠码可视化明细</h3><p>外部自行提链后可手动标记“已售出”；已售出代码不再支持查看或复制。</p></div><div class="filter-pills"><button class="active" type="button" data-promo-filter="all">全部</button><button type="button" data-promo-filter="available">可用</button><button type="button" data-promo-filter="assigned">已分配</button><button type="button" data-promo-filter="sold">已售出</button></div></div><div class="table-wrap"><table><thead><tr><th>优惠码</th><th>批次</th><th>导入时间</th><th>分配 CDK</th><th>自动删除时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="promo-table-body"></tbody></table></div><div class="pagination-bar"><span id="promo-page-info">第 1 页</span><div><button id="promo-prev-page" class="button button-secondary button-small" type="button">上一页</button><button id="promo-next-page" class="button button-secondary button-small" type="button">下一页</button></div></div></section>
+            <section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">Global inventory</span><h3>全球优惠码可视化明细</h3><p>外部自行提链后可手动标记“已使用”；完整代码会隐藏，但绑定客户在 CDK 有效期内仍可重复提链。</p></div><div class="filter-pills"><button class="active" type="button" data-promo-filter="all">全部</button><button type="button" data-promo-filter="available">可用</button><button type="button" data-promo-filter="assigned">已分配</button><button type="button" data-promo-filter="sold">已使用</button></div></div><div class="table-wrap"><table><thead><tr><th>优惠码</th><th>批次</th><th>导入时间</th><th>分配 CDK</th><th>后台清理时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="promo-table-body"></tbody></table></div><div class="pagination-bar"><span id="promo-page-info">第 1 页</span><div><button id="promo-prev-page" class="button button-secondary button-small" type="button">上一页</button><button id="promo-next-page" class="button button-secondary button-small" type="button">下一页</button></div></div></section>
           </section>
 
           <section class="view" data-view-panel="proxies" hidden>
