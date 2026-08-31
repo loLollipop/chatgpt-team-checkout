@@ -859,8 +859,11 @@ test('admin universal CDK is reusable, consumes no promo and rotates the previou
 
   const originalFetch = globalThis.fetch;
   let checkoutCalls = 0;
-  globalThis.fetch = async () => {
+  const checkoutPayloads = [];
+  globalThis.fetch = async (_url, init) => {
     checkoutCalls += 1;
+    const envelope = JSON.parse(init.body);
+    checkoutPayloads.push(JSON.parse(envelope.body));
     return new Response(JSON.stringify({ checkout_session_id: `oaics_admin_${checkoutCalls}` }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -875,6 +878,7 @@ test('admin universal CDK is reusable, consumes no promo and rotates the previou
           cdk: first.code,
           accessToken: 'eyJ' + 'z'.repeat(80),
           country: 'US',
+          promoCode: 'EXTERNALADMINPROMO9999',
           seatQuantity: 2,
         }),
       }), env);
@@ -886,6 +890,8 @@ test('admin universal CDK is reusable, consumes no promo and rotates the previou
     globalThis.fetch = originalFetch;
   }
   assert.equal(checkoutCalls, 2);
+  assert.equal(checkoutPayloads.every((payload) => payload.promo_code === 'EXTERNALADMINPROMO9999'), true);
+  assert.equal(env.DB.promoRows.length, 0);
   assert.equal(env.DB.rows[0].use_count, 0);
   assert.ok(env.DB.rows[0].last_used_at);
 

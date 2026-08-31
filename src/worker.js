@@ -12,6 +12,7 @@ import {
   importPromoCodes,
   listPromoCodes,
   markPromoForAutoDelete,
+  normalizePromoCode,
   validateRegisteredPromoCode,
 } from './promo-codes.js';
 
@@ -1183,16 +1184,22 @@ async function handleTeamCheckout(request, env) {
     );
   }
 
-  // 先校验 CDK 或已签名的 CDK 会话，再检查优惠码白名单，避免把工具用于外部优惠码。
+  // 先校验 CDK 或已签名的 CDK 会话。普通 CDK 只能使用后台登记的优惠码；管理员 CDK 可使用任意格式合法的优惠码。
   const submittedCdk = String(body.cdk || '').trim();
   const cdkAuthorization = submittedCdk
     ? await safeCdkOperation(() => verifyCdk(submittedCdk, env))
     : await cdkSessionAuthorization(request, env);
   if (!cdkAuthorization.ok) return cdkFailureResponse(cdkAuthorization, env);
 
-  const promoAuthorization = requestedPromo
-    ? await safePromoOperation(() => validateRegisteredPromoCode(requestedPromo, env))
-    : { ok: true, promoId: null, promoCode: '' };
+  let promoAuthorization = { ok: true, promoId: null, promoCode: '' };
+  if (requestedPromo && cdkAuthorization.kind === 'admin') {
+    const promoCode = normalizePromoCode(requestedPromo);
+    promoAuthorization = promoCode
+      ? { ok: true, promoId: null, promoCode }
+      : { ok: false, error: 'invalid_promo_code' };
+  } else if (requestedPromo) {
+    promoAuthorization = await safePromoOperation(() => validateRegisteredPromoCode(requestedPromo, env));
+  }
   if (!promoAuthorization.ok) return promoFailureResponse(promoAuthorization, env);
 
   const proxyResolution = await resolveCheckoutProxy(countryCode, env);
