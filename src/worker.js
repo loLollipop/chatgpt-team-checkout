@@ -292,12 +292,14 @@ function buildTeamPayload({
   billingPeriod,
 }) {
   const trimmedPromo = String(promoCode || '').trim();
+  const seatQuantity = seatDefault + seatProlite;
   const payload = {
     plan_name: 'chatgptteamplan',
     team_plan_data: {
       workspace_name: workspaceName,
       price_interval: billingPeriod,
-      seat_quantity: [
+      seat_quantity: seatQuantity,
+      seat_quantities: [
         { seat_type: 'default', quantity: seatDefault },
         { seat_type: 'prolite', quantity: seatProlite },
       ],

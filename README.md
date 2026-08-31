@@ -201,7 +201,7 @@ CDK 可处于以下状态：
 }
 ```
 
-`seatDefault` 和 `seatProlite` 分别是标准席位与高级席位数量，两者都可大于 0，但合计必须为 2–999。`billingPeriod` 可选 `month` 或 `year`。后端会把两个席位数量转换为 Checkout 需要的两项 `seat_quantity` 数组；旧版 `seatQuantity` + `seatType` 请求仍兼容。
+`seatDefault` 和 `seatProlite` 分别是标准席位与高级席位数量，两者都可大于 0，但合计必须为 2–999。`billingPeriod` 可选 `month` 或 `year`。后端会把合计数量写入整数 `seat_quantity`，并把标准/高级席位明细写入复数字段 `seat_quantities`。旧版 `seatQuantity` + `seatType` 请求仍兼容。
 
 `promoCode` 可留空；填写时必须是后台尚未删除的登记优惠码。生成支付链成功后，该优惠码会自动标记为“已售出”，完整代码不再通过管理接口返回，并在 24 小时后由 Cloudflare Cron 软删除。重复提链不会延后首次自动删除时间。
 

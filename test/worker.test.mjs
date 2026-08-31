@@ -791,7 +791,7 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
         currency: 'EUR',
         workspaceName: 'testWorkspace',
         promoCode: issued.promoCode,
-        seatDefault: 1,
+        seatDefault: 5,
         seatProlite: 1,
         billingPeriod: 'year',
         deviceId: 'test-device',
@@ -821,14 +821,15 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
     assert.equal(envelope.headers.Authorization.startsWith('Bearer eyJ'), true);
     assert.equal('proxyUrl' in envelope, false);
     assert.deepEqual(checkoutPayload.billing_details, { country: 'US', currency: 'USD' });
-    assert.deepEqual(checkoutPayload.team_plan_data.seat_quantity, [
-      { seat_type: 'default', quantity: 1 },
+    assert.equal(checkoutPayload.team_plan_data.seat_quantity, 6);
+    assert.deepEqual(checkoutPayload.team_plan_data.seat_quantities, [
+      { seat_type: 'default', quantity: 5 },
       { seat_type: 'prolite', quantity: 1 },
     ]);
     assert.equal(checkoutPayload.team_plan_data.price_interval, 'year');
-    assert.equal(data.seatDefault, 1);
+    assert.equal(data.seatDefault, 5);
     assert.equal(data.seatProlite, 1);
-    assert.equal(data.seatQuantity, 2);
+    assert.equal(data.seatQuantity, 6);
     assert.equal(data.billingPeriod, 'year');
 
     const secondResponse = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
@@ -959,7 +960,8 @@ test('checkout prefers an admin-imported proxy and sends it only inside the Rela
     assert.equal(response.status, 200);
     assert.equal(data.ok, true);
     assert.equal(envelope.proxyUrl, dynamicProxyUrl + '/');
-    assert.deepEqual(checkoutPayload.team_plan_data.seat_quantity, [
+    assert.equal(checkoutPayload.team_plan_data.seat_quantity, 2);
+    assert.deepEqual(checkoutPayload.team_plan_data.seat_quantities, [
       { seat_type: 'default', quantity: 2 },
       { seat_type: 'prolite', quantity: 0 },
     ]);
