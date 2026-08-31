@@ -62,6 +62,10 @@ const ERROR_MESSAGES = {
   cdk_expired: '该 CDK 已过期。',
   cdk_exhausted: '该 CDK 的使用次数已耗尽。',
   cdk_verify_rate_limited: '校验过于频繁，请稍后再试。',
+  invalid_promo_code: '优惠码格式不正确，请填写 /p/ 后面的代码或完整优惠链接。',
+  promo_not_registered: '该优惠码未在管理后台登记，无法使用本工作台提链。',
+  promo_service_not_configured: '优惠码校验服务尚未配置，请联系管理员。',
+  promo_database_error: '优惠码校验服务暂时不可用，请稍后再试。',
   missing_access_token: '请先粘贴 Access Token。',
   access_token_too_short: 'Access Token 长度异常，请重新复制完整内容。',
   unsupported_country: '所选国家暂不支持。',
@@ -427,17 +431,34 @@ function setLoading(button, loading, labelElement, loadingText, idleText) {
   labelElement.textContent = loading ? loadingText : idleText;
 }
 
+function formatExpiry(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function updateCdkChip(details) {
+  if (details.unlimited || details.kind === 'admin' || details.cdkKind === 'admin') {
+    elements.cdkRemaining.textContent = '管理员通用 · 长期有效';
+    return;
+  }
+  const repeatable = details.repeatable ?? details.cdkRepeatable;
+  const expiresAt = details.expiresAt || details.cdkExpiresAt;
+  const useCount = details.useCount ?? details.cdkUseCount;
+  const expiry = formatExpiry(expiresAt);
+  if (repeatable) {
+    elements.cdkRemaining.textContent = `${expiry ? `有效至 ${expiry} · ` : ''}可重复提链${useCount ? ` · 已成功 ${useCount} 次` : ''}`;
+    return;
+  }
+  const remainingUses = details.remainingUses ?? details.cdkRemainingUses;
+  elements.cdkRemaining.textContent = `剩余 ${remainingUses} 次${expiry ? ` · 有效至 ${expiry}` : ''}`;
+}
+
 function unlockWorkbench(verification) {
   elements.gateView.hidden = true;
   elements.workbench.hidden = false;
-  if (verification.unlimited || verification.kind === 'admin') {
-    elements.cdkRemaining.textContent = '管理员通用 · 长期有效';
-    window.scrollTo({ top: 0, behavior: 'instant' });
-    setTimeout(() => elements.accessToken.focus(), 80);
-    return;
-  }
-  const expiry = verification.expiresAt ? ` · ${new Date(verification.expiresAt).toLocaleDateString('zh-CN')} 到期` : '';
-  elements.cdkRemaining.textContent = `剩余 ${verification.remainingUses} 次${expiry}`;
+  updateCdkChip(verification);
   window.scrollTo({ top: 0, behavior: 'instant' });
   setTimeout(() => elements.accessToken.focus(), 80);
 }
@@ -575,8 +596,11 @@ elements.form.addEventListener('submit', async (event) => {
     elements.resultUrl.value = data.url;
     elements.openResult.href = data.url;
     elements.resultCard.hidden = false;
-    elements.cdkRemaining.textContent = data.cdkRemainingUses == null ? '管理员通用 · 长期有效' : `剩余 ${data.cdkRemainingUses} 次`;
-    setStatus(elements.formStatus, '支付长链创建成功。', 'success');
+    updateCdkChip(data);
+    const cleanupText = data.promoCleanupScheduled && data.promoAutoDeleteAt
+      ? ` 该优惠码将在 ${formatExpiry(data.promoAutoDeleteAt)} 后自动从后台清理。`
+      : '';
+    setStatus(elements.formStatus, `支付长链创建成功。${cleanupText}`, 'success');
     elements.resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (error) {
     setStatus(elements.formStatus, error.message || '创建失败，请稍后重试。', 'error');

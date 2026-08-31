@@ -5,8 +5,10 @@ const CDK_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CDK_GROUPS = 4;
 const CDK_GROUP_LENGTH = 4;
 const MAX_BATCH_SIZE = 50;
-const STANDARD_CDK_MAX_USES = 1;
-const STANDARD_CDK_LIFETIME_MS = 24 * 60 * 60 * 1_000;
+const STANDARD_CDK_ACTIVATION_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const STANDARD_CDK_ACTIVE_LIFETIME_MS = 3 * 60 * 60 * 1_000;
+// 兼容初始表的 CHECK (max_uses > 0)；对外仍以 repeatable=true / maxUses=null 表示不限次数。
+const STANDARD_CDK_REPEATABLE_SENTINEL = 2_147_483_647;
 const CDK_KIND_STANDARD = 'standard';
 const CDK_KIND_ADMIN = 'admin';
 
@@ -57,7 +59,8 @@ function recordState(row, now = new Date()) {
   if (row.revoked_at) return 'revoked';
   if (rowKind(row) === CDK_KIND_ADMIN) return 'active';
   if (row.expires_at && new Date(row.expires_at) <= now) return 'expired';
-  if (Number(row.use_count) >= Number(row.max_uses)) return 'exhausted';
+  if (!row.activated_at) return 'pending';
+  if (Number(row.max_uses) > 0 && Number(row.use_count) >= Number(row.max_uses)) return 'exhausted';
   return 'active';
 }
 
@@ -66,6 +69,10 @@ function publicRecord(row, now = new Date(), revealedCode = '', revealedPromo = 
   const maxUses = Number(row.max_uses);
   const useCount = Number(row.use_count);
   const unlimited = kind === CDK_KIND_ADMIN;
+  const repeatable = kind === CDK_KIND_STANDARD && maxUses === STANDARD_CDK_REPEATABLE_SENTINEL;
+  const promoSold = Boolean(row.promo_auto_delete_at);
+  const promoDeleted = Boolean(row.promo_deleted_at);
+  const promoLocked = promoSold || promoDeleted;
   return {
     id: Number(row.id),
     maskedCode: '••••-••••-••••-' + row.code_suffix,
@@ -74,14 +81,22 @@ function publicRecord(row, now = new Date(), revealedCode = '', revealedPromo = 
     label: row.label || '',
     kind,
     unlimited,
-    maxUses: unlimited ? null : maxUses,
+    repeatable,
+    maxUses: unlimited || repeatable ? null : maxUses,
     useCount,
-    remainingUses: unlimited ? null : Math.max(0, maxUses - useCount),
+    remainingUses: unlimited || repeatable ? null : Math.max(0, maxUses - useCount),
     createdAt: row.created_at,
+    activatedAt: kind === CDK_KIND_STANDARD ? (row.activated_at || '') : '',
+    activationDeadline: kind === CDK_KIND_STANDARD && !row.activated_at ? (row.expires_at || '') : '',
     expiresAt: unlimited ? '' : (row.expires_at || ''),
     revokedAt: row.revoked_at || '',
     lastUsedAt: row.last_used_at || '',
-    promoCode: revealedPromo || (row.promo_suffix ? '••••••' + row.promo_suffix : ''),
+    promoCode: promoLocked
+      ? (row.promo_suffix ? '••••••' + row.promo_suffix : '')
+      : (revealedPromo || (row.promo_suffix ? '••••••' + row.promo_suffix : '')),
+    promoLocked,
+    promoSold,
+    promoDeleted,
     state: recordState(row, now),
   };
 }
@@ -101,15 +116,18 @@ function resultFromRecord(row, now = new Date()) {
     label: record.label,
     kind: record.kind,
     unlimited: record.unlimited,
+    repeatable: record.repeatable,
     maxUses: record.maxUses,
     useCount: record.useCount,
     remainingUses: record.remainingUses,
+    activatedAt: record.activatedAt,
+    activationDeadline: record.activationDeadline,
     expiresAt: record.expiresAt,
   };
 }
 
 const CDK_SELECT_COLUMNS = `id, code_suffix, label, kind, max_uses, use_count,
-  created_at, expires_at, revoked_at, last_used_at`;
+  created_at, activated_at, expires_at, revoked_at, deleted_at, last_used_at`;
 
 export async function verifyCdk(value, env, options = {}) {
   if (!databaseReady(env)) return unavailableResult();
@@ -118,16 +136,35 @@ export async function verifyCdk(value, env, options = {}) {
   const codeHash = await hashCdk(normalized, env.CDK_HASH_PEPPER);
   const now = new Date();
   const nowIso = now.toISOString();
-  const row = await env.DB.prepare(
-    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks WHERE code_hash = ?1 LIMIT 1`
+  let row = await env.DB.prepare(
+    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
+     WHERE code_hash = ?1 AND deleted_at IS NULL LIMIT 1`
   ).bind(codeHash).first();
+  if (row && rowKind(row) === CDK_KIND_STANDARD && recordState(row, now) === 'pending') {
+    const activatedUntil = new Date(now.getTime() + STANDARD_CDK_ACTIVE_LIFETIME_MS).toISOString();
+    await env.DB.prepare(
+      `UPDATE cdks
+       SET activated_at = ?1, expires_at = ?2
+       WHERE id = ?3
+         AND kind = 'standard'
+         AND activated_at IS NULL
+         AND deleted_at IS NULL
+         AND revoked_at IS NULL
+         AND expires_at > ?1`
+    ).bind(nowIso, activatedUntil, row.id).run();
+    row = await env.DB.prepare(
+      `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
+       WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
+    ).bind(row.id).first();
+  }
+
   const current = resultFromRecord(row, now);
   if (!current.ok || !options.consume) return current;
 
   if (current.unlimited) {
     const update = await env.DB.prepare(
       `UPDATE cdks SET last_used_at = ?1
-       WHERE id = ?2 AND kind = 'admin' AND revoked_at IS NULL`
+       WHERE id = ?2 AND kind = 'admin' AND revoked_at IS NULL AND deleted_at IS NULL`
     ).bind(nowIso, row.id).run();
     if (Number(update?.meta?.changes || 0) === 1) return current;
   } else {
@@ -136,17 +173,25 @@ export async function verifyCdk(value, env, options = {}) {
        SET use_count = use_count + 1, last_used_at = ?1
        WHERE id = ?2
          AND kind = 'standard'
+         AND activated_at IS NOT NULL
+         AND deleted_at IS NULL
          AND revoked_at IS NULL
          AND expires_at > ?1
-         AND use_count < max_uses`
+         AND (max_uses = 2147483647 OR use_count < max_uses)`
     ).bind(nowIso, row.id).run();
     if (Number(update?.meta?.changes || 0) === 1) {
-      return { ...current, useCount: current.useCount + 1, remainingUses: 0 };
+      const useCount = current.useCount + 1;
+      return {
+        ...current,
+        useCount,
+        remainingUses: current.repeatable ? null : Math.max(0, current.maxUses - useCount),
+      };
     }
   }
 
   const latest = await env.DB.prepare(
-    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks WHERE id = ?1 LIMIT 1`
+    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
+     WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
   ).bind(row.id).first();
   return resultFromRecord(latest, new Date());
 }
@@ -164,7 +209,7 @@ export async function createCdks(input, env) {
 
   const label = String(input?.label || '').trim().slice(0, 80);
   const createdAt = new Date().toISOString();
-  const expiresAt = new Date(new Date(createdAt).getTime() + STANDARD_CDK_LIFETIME_MS).toISOString();
+  const expiresAt = new Date(new Date(createdAt).getTime() + STANDARD_CDK_ACTIVATION_WINDOW_MS).toISOString();
   const generated = [];
   const statements = [];
 
@@ -177,7 +222,7 @@ export async function createCdks(input, env) {
       env.DB.prepare(
         `INSERT INTO cdks
          (code_hash, code_suffix, label, kind, max_uses, use_count, created_at, expires_at, encrypted_code)
-         VALUES (?1, ?2, ?3, 'standard', 1, 0, ?4, ?5, ?6)`
+         VALUES (?1, ?2, ?3, 'standard', 2147483647, 0, ?4, ?5, ?6)`
       ).bind(codeHash, code.slice(-4), label, createdAt, expiresAt, encryptedCode)
     );
     statements.push(
@@ -188,6 +233,7 @@ export async function createCdks(input, env) {
            (
              SELECT p.id FROM promo_codes p
              WHERE p.deleted_at IS NULL
+               AND p.auto_delete_at IS NULL
                AND NOT EXISTS (
                  SELECT 1 FROM cdk_promo_assignments a WHERE a.promo_code_id = p.id
                )
@@ -211,7 +257,9 @@ export async function createCdks(input, env) {
       label,
       kind: CDK_KIND_STANDARD,
       unlimited: false,
-      maxUses: STANDARD_CDK_MAX_USES,
+      repeatable: true,
+      maxUses: null,
+      activationDeadline: expiresAt,
       expiresAt,
       promoCode: assignments[index].promoCode,
     })),
@@ -243,6 +291,7 @@ export async function createAdminCdk(input, env) {
       label,
       kind: CDK_KIND_ADMIN,
       unlimited: true,
+      repeatable: false,
       maxUses: null,
       expiresAt: '',
       promoCode: '',
@@ -255,11 +304,13 @@ export async function listCdks(env, limitValue = 200) {
   const limit = parsePositiveInteger(limitValue, 200, 500) || 200;
   const result = await env.DB.prepare(
     `SELECT c.id, c.code_suffix, c.encrypted_code, c.label, c.kind, c.max_uses, c.use_count, c.created_at,
-            c.expires_at, c.revoked_at, c.last_used_at, p.code_suffix AS promo_suffix,
-            p.encrypted_code AS promo_encrypted_code, p.country AS promo_scope
+            c.activated_at, c.expires_at, c.revoked_at, c.deleted_at, c.last_used_at, p.code_suffix AS promo_suffix,
+            p.encrypted_code AS promo_encrypted_code, p.country AS promo_scope,
+            p.auto_delete_at AS promo_auto_delete_at, p.deleted_at AS promo_deleted_at
      FROM cdks c
      LEFT JOIN cdk_promo_assignments a ON a.cdk_id = c.id
      LEFT JOIN promo_codes p ON p.id = a.promo_code_id
+     WHERE c.deleted_at IS NULL
      ORDER BY c.id DESC LIMIT ?1`
   ).bind(limit).all();
   const now = new Date();
@@ -276,11 +327,13 @@ export async function listCdks(env, limitValue = 200) {
         revealedCode = '';
       }
     }
-    const revealedPromo = await decryptPromoForAdmin(
-      row.promo_encrypted_code,
-      row.promo_scope,
-      env
-    );
+    const revealedPromo = row.promo_auto_delete_at || row.promo_deleted_at
+      ? ''
+      : await decryptPromoForAdmin(
+          row.promo_encrypted_code,
+          row.promo_scope,
+          env
+        );
     return publicRecord(row, now, revealedCode, revealedPromo);
   }));
   return {
@@ -293,7 +346,7 @@ export async function listCdks(env, limitValue = 200) {
         stats[record.kind] += 1;
         return stats;
       },
-      { total: 0, active: 0, exhausted: 0, expired: 0, revoked: 0, standard: 0, admin: 0 }
+      { total: 0, pending: 0, active: 0, exhausted: 0, expired: 0, revoked: 0, standard: 0, admin: 0 }
     ),
   };
 }
@@ -304,8 +357,23 @@ export async function revokeCdk(idValue, env) {
   if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'invalid_cdk_id' };
   const revokedAt = new Date().toISOString();
   const result = await env.DB.prepare(
-    `UPDATE cdks SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL`
+    `UPDATE cdks SET revoked_at = ?1
+     WHERE id = ?2 AND revoked_at IS NULL AND deleted_at IS NULL`
   ).bind(revokedAt, id).run();
   if (Number(result?.meta?.changes || 0) !== 1) return { ok: false, error: 'cdk_not_found_or_revoked' };
   return { ok: true, id, revokedAt };
+}
+
+export async function deleteCdk(idValue, env) {
+  if (!databaseReady(env)) return unavailableResult();
+  const id = Number(idValue);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'invalid_cdk_id' };
+  const deletedAt = new Date().toISOString();
+  const result = await env.DB.prepare(
+    `UPDATE cdks
+     SET deleted_at = ?1, revoked_at = COALESCE(revoked_at, ?1)
+     WHERE id = ?2 AND deleted_at IS NULL`
+  ).bind(deletedAt, id).run();
+  if (Number(result?.meta?.changes || 0) !== 1) return { ok: false, error: 'cdk_not_found' };
+  return { ok: true, id, deletedAt };
 }

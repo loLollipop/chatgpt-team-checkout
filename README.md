@@ -5,11 +5,15 @@
 ## 已实现功能
 
 - 页面首次打开只显示 CDK 验证入口，验证通过后才会进入正式工作台。
-- 客户 CDK 生成后 24 小时有效、仅可成功提链 1 次；Checkout API 在服务端原子核销。
+- 客户 CDK 生成后有 24 小时待激活期；首次校验激活后 3 小时内可重复提链并更换国家。
 - 支持长期有效、可重复使用的管理员通用 CDK；重新生成时自动停用旧码。
+- CDK 支持停用和软删除；删除后立即失效并从后台列表移除，但不会回收已经分配的优惠码。
 - `/admin` 管理后台按概览、CDK、优惠码、国家代理分类。
 - 优惠码支持 Excel、CSV、TXT 和粘贴导入；所有国家共用全球库存，生成客户 CDK 时原子分配一条。
 - 兼容导入完整 `chatgpt.com/p/...` 链接，自动截取、存储并展示 `/p/` 后的优惠码；库存列表支持状态筛选和分页。
+- 工作台只接受后台已登记且未删除的优惠码，拒绝使用外部优惠码。
+- 优惠码可由管理员手动标记“已售出”，通过工作台提链成功时也会自动标记；已售出代码立即脱敏并在首次标记 24 小时后自动删除。
+- 已分配优惠码仍可由管理员手动删除，方便同步客户在外部自行提链的库存状态。
 - 管理后台可直接查看、复制新生成的 CDK、优惠码及其分配关系；敏感值仅通过鉴权后的管理接口解密返回。
 - 生成结果可直接复制“自助提链 / CDK / 优惠码”三行交付文本。
 - CDK 同时保存 `SHA-256(Pepper + CDK)` 校验值和 AES-GCM 密文，数据库中不出现明文；升级前的历史 CDK 因只有哈希，只能继续脱敏显示。
@@ -22,13 +26,14 @@
 
 ```text
 用户输入 CDK
-  → Worker 查询 D1 验证授权
+  → Worker 查询 D1，首次校验时激活 3 小时授权
   → 页面解锁
-  → 用户提交 Access Token 和国家
-  → Worker 再次验证 CDK并原子计次
+  → 用户提交 Access Token、国家和优惠码
+  → Worker 再次验证 CDK，并校验优惠码是否在后台登记
   → Worker 解密该国家代理并交给 HTTPS Relay
   → Relay 通过对应 HTTP / HTTPS 代理出站
   → chatgpt.com / api.openai.com
+  → 成功后累计 CDK 使用次数，并把优惠码标记为已售出
 ```
 
 ## 首次部署
@@ -156,16 +161,17 @@ npm run dev
 - `count`：单批 1–50 个。
 - `label`：最长 80 字符的内部备注。
 
-服务端固定每个客户 CDK 仅可使用 1 次，并在生成后 24 小时过期；传入自定义次数或有效期不会改变该规则。库存不足时整批生成会被拒绝，不会留下未绑定优惠码的 CDK。
+服务端固定每个新客户 CDK 有 24 小时待激活期。首次调用校验接口时写入激活时间，并把有效期重置为从激活时刻起 3 小时；这 3 小时内可以重复生成支付链和更换国家。传入自定义次数或有效期不会改变该规则。库存不足时整批生成会被拒绝，不会留下未绑定优惠码的 CDK。
 
 管理员通用 CDK 长期有效、可重复使用、不分配优惠码。系统同时只保留一个有效管理员通用 CDK。
 
-校核 CDK 本身不会核销。真正提交生成支付链时，后端使用带条件的 D1 `UPDATE` 原子核销，避免同一客户 CDK 被并发使用。国家代理未配置、请求参数不合法时不会核销；进入上游 Checkout 后即视为已使用。
+校核 CDK 会开始 3 小时激活期，但不会增加使用次数。每次成功生成支付链后，后端使用带条件的 D1 `UPDATE` 原子累计 `use_count` 供审计；激活期内不限制成功次数。国家代理未配置、参数不合法或上游失败时不会累计次数。
 
 CDK 可处于以下状态：
 
-- `active`：有效且有剩余次数。
-- `exhausted`：次数已耗尽。
+- `pending`：尚未激活，仍处于 24 小时激活期限内。
+- `active`：已经激活且仍在 3 小时有效期内。
+- `exhausted`：旧版单次 CDK 的次数已耗尽；新 CDK 不会进入此状态。
 - `expired`：超过有效期。
 - `revoked`：管理员手动吊销。
 
@@ -177,7 +183,7 @@ CDK 可处于以下状态：
 { "cdk": "ABCD-EFGH-JKLM-NPQR" }
 ```
 
-验证成功返回 CDK 类型、是否无限次、剩余次数和有效期，不核销。
+普通 CDK 首次验证时激活。验证成功返回 CDK 类型、`repeatable`、激活时间、使用次数和有效期，不增加使用次数。
 
 ### `POST /api/checkout/team`
 
@@ -197,6 +203,8 @@ CDK 可处于以下状态：
 
 `seatDefault` 和 `seatProlite` 分别是标准席位与高级席位数量，两者都可大于 0，但合计必须为 2–999。`billingPeriod` 可选 `month` 或 `year`。后端会把两个席位数量转换为 Checkout 需要的两项 `seat_quantity` 数组；旧版 `seatQuantity` + `seatType` 请求仍兼容。
 
+`promoCode` 可留空；填写时必须是后台尚未删除的登记优惠码。生成支付链成功后，该优惠码会自动标记为“已售出”，完整代码不再通过管理接口返回，并在 24 小时后由 Cloudflare Cron 软删除。重复提链不会延后首次自动删除时间。
+
 后端只接受九个国家，币种由国家强制决定。主源网络错误、超时或 5xx 时，会通过同一个国家代理回退到 `api.openai.com`。
 
 ### 管理 API
@@ -211,9 +219,11 @@ Authorization: Bearer <ADMIN_TOKEN>
 - `POST /api/admin/cdks`：生成 CDK。
 - `POST /api/admin/cdks/universal`：生成新的管理员通用 CDK，并自动停用旧管理员 CDK。
 - `DELETE /api/admin/cdks/:id`：吊销 CDK。
-- `GET /api/admin/promos?page=1&limit=20&state=all`：优惠码可视化库存、分配状态、统计和分页信息。`limit` 最大 100，`state` 可选 `all`、`available`、`assigned`。
+- `DELETE /api/admin/cdks/:id/delete`：软删除 CDK；保留优惠码分配关系。
+- `GET /api/admin/promos?page=1&limit=20&state=all`：优惠码可视化库存、分配状态、统计和分页信息。`limit` 最大 100，`state` 可选 `all`、`available`、`assigned`、`sold`。
 - `POST /api/admin/promos`：批量加密导入优惠码。
-- `DELETE /api/admin/promos/:id`：删除未分配优惠码；已分配优惠码不能回收。
+- `POST /api/admin/promos/:id/sold`：手动标记已售出，并从首次标记起安排 24 小时后自动删除。
+- `DELETE /api/admin/promos/:id`：软删除优惠码；已分配或已售出的优惠码也可删除。
 - `GET /api/admin/proxies`：返回代理脱敏列表。
 - `POST /api/admin/proxies`：单个或批量加密保存代理。
 - `POST /api/admin/proxies/:country/test`：通过 Relay 测试出口 IP 和延迟。

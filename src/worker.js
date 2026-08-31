@@ -1,4 +1,4 @@
-import { createAdminCdk, createCdks, listCdks, revokeCdk, verifyCdk } from './cdk.js';
+import { createAdminCdk, createCdks, deleteCdk, listCdks, revokeCdk, verifyCdk } from './cdk.js';
 import {
   deleteProxyRoute,
   getProxyRoute,
@@ -6,7 +6,14 @@ import {
   recordProxyTest,
   saveProxyRoutes,
 } from './proxy-config.js';
-import { deletePromoCode, importPromoCodes, listPromoCodes } from './promo-codes.js';
+import {
+  cleanupExpiredPromoCodes,
+  deletePromoCode,
+  importPromoCodes,
+  listPromoCodes,
+  markPromoForAutoDelete,
+  validateRegisteredPromoCode,
+} from './promo-codes.js';
 
 // ChatGPT Team 支付长链生成器 - Cloudflare Worker
 // 前端静态资源 + 国家配置 + 按国家转发 checkout 请求。
@@ -237,7 +244,8 @@ async function safePromoOperation(operation) {
 function promoFailureStatus(error) {
   if (['promo_service_not_configured', 'promo_database_error'].includes(error)) return 503;
   if (error === 'promo_inventory_insufficient') return 409;
-  if (error === 'promo_not_found_or_assigned') return 404;
+  if (error === 'promo_not_registered') return 403;
+  if (error === 'promo_not_found') return 404;
   return 400;
 }
 
@@ -487,9 +495,11 @@ async function handleCdkVerify(request, env) {
       label: result.label,
       kind: result.kind,
       unlimited: result.unlimited,
+      repeatable: result.repeatable,
       maxUses: result.maxUses,
       useCount: result.useCount,
       remainingUses: result.remainingUses,
+      activatedAt: result.activatedAt,
       expiresAt: result.expiresAt,
     },
     200,
@@ -563,6 +573,7 @@ async function handleAdminPromos(request, env) {
 
   if (request.method === 'GET') {
     const url = new URL(request.url);
+    await safePromoOperation(() => cleanupExpiredPromoCodes(env));
     const result = await safePromoOperation(() => listPromoCodes(env, {
       limit: url.searchParams.get('limit') || 20,
       page: url.searchParams.get('page') || 1,
@@ -587,12 +598,17 @@ async function handleAdminPromos(request, env) {
   return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
 }
 
-async function handleAdminPromoItem(request, env, id) {
+async function handleAdminPromoItem(request, env, id, action = '') {
   const authorization = adminAuthorization(request, env);
   if (!authorization.ok) {
     return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
   }
-  if (request.method !== 'DELETE') {
+  if (action === 'sold' && request.method === 'POST') {
+    const result = await safePromoOperation(() => markPromoForAutoDelete(id, env));
+    if (!result.ok) return promoFailureResponse(result, env);
+    return jsonResponse({ ...result, sold: true }, 200, { 'Cache-Control': 'no-store' }, env);
+  }
+  if (request.method !== 'DELETE' || action) {
     return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
   }
   const result = await safePromoOperation(() => deletePromoCode(id, env));
@@ -600,7 +616,7 @@ async function handleAdminPromoItem(request, env, id) {
   return jsonResponse(result, 200, { 'Cache-Control': 'no-store' }, env);
 }
 
-async function handleAdminCdkItem(request, env, id) {
+async function handleAdminCdkItem(request, env, id, action = '') {
   const authorization = adminAuthorization(request, env);
   if (!authorization.ok) {
     return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
@@ -608,7 +624,7 @@ async function handleAdminCdkItem(request, env, id) {
   if (request.method !== 'DELETE') {
     return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
   }
-  const result = await safeCdkOperation(() => revokeCdk(id, env));
+  const result = await safeCdkOperation(() => action === 'delete' ? deleteCdk(id, env) : revokeCdk(id, env));
   if (!result.ok) {
     const status = ['cdk_service_not_configured', 'cdk_database_error'].includes(result.error) ? 503 : 404;
     return jsonResponse(result, status, {}, env);
@@ -961,19 +977,25 @@ async function handleTeamCheckout(request, env) {
     );
   }
 
+  // 先校验并激活 CDK，再检查优惠码白名单，避免把工具用于外部优惠码。
+  const cdkAuthorization = await safeCdkOperation(() => verifyCdk(body.cdk, env));
+  if (!cdkAuthorization.ok) return cdkFailureResponse(cdkAuthorization, env);
+
+  const requestedPromo = String(body.promoCode || '').trim();
+  const promoAuthorization = requestedPromo
+    ? await safePromoOperation(() => validateRegisteredPromoCode(requestedPromo, env))
+    : { ok: true, promoId: null, promoCode: '' };
+  if (!promoAuthorization.ok) return promoFailureResponse(promoAuthorization, env);
+
   const proxyResolution = await resolveCheckoutProxy(countryCode, env);
   if (!proxyResolution.ok) return proxyFailureResponse(proxyResolution, env);
   const proxyRoute = proxyResolution.route;
-
-  // 只有通过服务端校验并原子计次的 CDK 才能进入上游 Checkout。
-  const cdkAuthorization = await safeCdkOperation(() => verifyCdk(body.cdk, env, { consume: true }));
-  if (!cdkAuthorization.ok) return cdkFailureResponse(cdkAuthorization, env);
 
   const workspaceName = String(body.workspaceName || 'myWorkspace').trim().slice(0, 80) || 'myWorkspace';
   const claims = decodeJwtPayload(accessToken);
   const auth = claims['https://api.openai.com/auth'] || {};
   const payload = buildTeamPayload({
-    promoCode: body.promoCode,
+    promoCode: promoAuthorization.promoCode,
     country: country.code,
     currency: country.currency,
     workspaceName,
@@ -996,6 +1018,11 @@ async function handleTeamCheckout(request, env) {
     if (result.status >= 200 && result.status < 300) {
       const { url, sessionId } = resolveCheckoutUrl(result.data);
       if (url) {
+        const cdkUsage = await safeCdkOperation(() => verifyCdk(body.cdk, env, { consume: true }));
+        const promoLifecycle = promoAuthorization.promoId
+          ? await safePromoOperation(() => markPromoForAutoDelete(promoAuthorization.promoId, env))
+          : { ok: true, autoDeleteAt: '' };
+        const usage = cdkUsage.ok ? cdkUsage : cdkAuthorization;
         return jsonResponse(
           {
             ok: true,
@@ -1009,10 +1036,15 @@ async function handleTeamCheckout(request, env) {
             seatDefault,
             seatProlite,
             billingPeriod,
-            promoCode: payload.promo_code || '',
+            promoCleanupScheduled: Boolean(promoAuthorization.promoId && promoLifecycle.ok),
+            promoSold: Boolean(promoAuthorization.promoId && promoLifecycle.ok),
+            promoAutoDeleteAt: promoLifecycle.ok ? (promoLifecycle.autoDeleteAt || '') : '',
             proxyUsed: Boolean(proxyRoute),
-            cdkRemainingUses: cdkAuthorization.remainingUses,
-            cdkExpiresAt: cdkAuthorization.expiresAt,
+            cdkKind: usage.kind,
+            cdkRepeatable: usage.repeatable,
+            cdkUseCount: usage.useCount,
+            cdkRemainingUses: usage.remainingUses,
+            cdkExpiresAt: usage.expiresAt,
             attempts,
           },
           200,
@@ -1107,13 +1139,13 @@ export default {
     if (url.pathname === '/api/admin/cdks/universal') {
       return handleAdminUniversalCdk(request, env);
     }
-    const adminCdkMatch = /^\/api\/admin\/cdks\/(\d+)$/.exec(url.pathname);
-    if (adminCdkMatch) return handleAdminCdkItem(request, env, adminCdkMatch[1]);
+    const adminCdkMatch = /^\/api\/admin\/cdks\/(\d+)(?:\/(delete))?$/.exec(url.pathname);
+    if (adminCdkMatch) return handleAdminCdkItem(request, env, adminCdkMatch[1], adminCdkMatch[2] || '');
     if (url.pathname === '/api/admin/promos' && ['GET', 'POST'].includes(request.method)) {
       return handleAdminPromos(request, env);
     }
-    const adminPromoMatch = /^\/api\/admin\/promos\/(\d+)$/.exec(url.pathname);
-    if (adminPromoMatch) return handleAdminPromoItem(request, env, adminPromoMatch[1]);
+    const adminPromoMatch = /^\/api\/admin\/promos\/(\d+)(?:\/(sold))?$/.exec(url.pathname);
+    if (adminPromoMatch) return handleAdminPromoItem(request, env, adminPromoMatch[1], adminPromoMatch[2] || '');
     if (url.pathname === '/api/admin/proxies' && ['GET', 'POST'].includes(request.method)) {
       return handleAdminProxies(request, env);
     }
@@ -1132,5 +1164,10 @@ export default {
 
     if (env.ASSETS && request.method === 'GET') return env.ASSETS.fetch(request);
     return jsonResponse({ ok: false, error: 'not_found', path: url.pathname }, 404, {}, env);
+  },
+  async scheduled(_controller, env, ctx) {
+    const cleanup = safePromoOperation(() => cleanupExpiredPromoCodes(env));
+    if (ctx?.waitUntil) ctx.waitUntil(cleanup);
+    else await cleanup;
   },
 };

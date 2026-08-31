@@ -20,6 +20,7 @@ class MemoryStatement {
     if (this.query.includes('SELECT COUNT(*) AS available') && this.query.includes('FROM promo_codes p')) {
       const available = this.database.promoRows.filter((row) =>
         !row.deleted_at &&
+        !row.auto_delete_at &&
         !this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id)
       ).length;
       return { available };
@@ -28,15 +29,18 @@ class MemoryStatement {
       const countryFiltered = this.query.includes('WHERE p.country = ?1');
       const country = countryFiltered ? this.values[0] : '';
       const rows = this.database.promoRows.filter((row) => !row.deleted_at && (!country || row.country === country));
-      const assigned = rows.filter((row) => this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id)).length;
-      return { total: rows.length, available: rows.length - assigned, assigned };
+      const assigned = rows.filter((row) => !row.auto_delete_at && this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id)).length;
+      const available = rows.filter((row) => !row.auto_delete_at && !this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id)).length;
+      const sold = rows.filter((row) => row.auto_delete_at).length;
+      return { total: rows.length, available, assigned, sold };
     }
     if (this.query.includes('SELECT COUNT(*) AS total') && this.query.includes('FROM promo_codes p')) {
       const rows = this.database.promoRows.filter((row) => {
         if (row.deleted_at) return false;
         const assigned = this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id);
-        if (this.query.includes('a.cdk_id IS NULL')) return !assigned;
-        if (this.query.includes('a.cdk_id IS NOT NULL')) return assigned;
+        if (this.query.includes('p.auto_delete_at IS NOT NULL')) return Boolean(row.auto_delete_at);
+        if (this.query.includes('a.cdk_id IS NULL')) return !assigned && !row.auto_delete_at;
+        if (this.query.includes('a.cdk_id IS NOT NULL')) return assigned && !row.auto_delete_at;
         return true;
       });
       return { total: rows.length };
@@ -47,14 +51,20 @@ class MemoryStatement {
       const promo = assignment && this.database.promoRows.find((row) => row.id === assignment.promo_code_id);
       return cdk && promo ? { cdk_id: cdk.id, encrypted_code: promo.encrypted_code, code_suffix: promo.code_suffix, country: promo.country } : null;
     }
+    if (this.query.startsWith('SELECT id FROM promo_codes') && this.query.includes('WHERE code_hash = ?1')) {
+      return this.database.promoRows.find((row) => row.code_hash === this.values[0] && !row.deleted_at) || null;
+    }
+    if (this.query.startsWith('SELECT redeemed_at, auto_delete_at FROM promo_codes')) {
+      return this.database.promoRows.find((row) => row.id === Number(this.values[0])) || null;
+    }
     if (this.query.includes('FROM proxy_routes WHERE country = ?1')) {
       return this.database.proxyRows.find((row) => row.country === this.values[0]) || null;
     }
     if (this.query.includes('WHERE code_hash = ?1')) {
-      return this.database.rows.find((row) => row.code_hash === this.values[0]) || null;
+      return this.database.rows.find((row) => row.code_hash === this.values[0] && (!this.query.includes('deleted_at IS NULL') || !row.deleted_at)) || null;
     }
     if (this.query.includes('WHERE id = ?1')) {
-      return this.database.rows.find((row) => row.id === Number(this.values[0])) || null;
+      return this.database.rows.find((row) => row.id === Number(this.values[0]) && (!this.query.includes('deleted_at IS NULL') || !row.deleted_at)) || null;
     }
     return null;
   }
@@ -67,8 +77,9 @@ class MemoryStatement {
         .filter((row) => {
           if (row.deleted_at) return false;
           const assigned = this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id);
-          if (this.query.includes('a.cdk_id IS NULL')) return !assigned;
-          if (this.query.includes('a.cdk_id IS NOT NULL')) return assigned;
+          if (this.query.includes('p.auto_delete_at IS NOT NULL')) return Boolean(row.auto_delete_at);
+          if (this.query.includes('a.cdk_id IS NULL')) return !assigned && !row.auto_delete_at;
+          if (this.query.includes('a.cdk_id IS NOT NULL')) return assigned && !row.auto_delete_at;
           return true;
         })
         .sort((left, right) => right.id - left.id)
@@ -76,7 +87,7 @@ class MemoryStatement {
         .map((row) => {
           const assignment = this.database.assignmentRows.find((item) => item.promo_code_id === row.id);
           const cdk = assignment && this.database.rows.find((item) => item.id === assignment.cdk_id);
-          return { ...row, cdk_id: assignment?.cdk_id ?? null, assigned_at: assignment?.assigned_at ?? null, cdk_suffix: cdk?.code_suffix ?? null, cdk_encrypted_code: cdk?.encrypted_code ?? null, cdk_kind: cdk?.kind ?? null };
+          return { ...row, cdk_id: assignment?.cdk_id ?? null, assigned_at: assignment?.assigned_at ?? null, cdk_suffix: cdk?.code_suffix ?? null, cdk_encrypted_code: cdk?.encrypted_code ?? null, cdk_kind: cdk?.kind ?? null, cdk_deleted_at: cdk?.deleted_at ?? null };
         });
       return { results: rows };
     }
@@ -86,10 +97,10 @@ class MemoryStatement {
     if (!this.query.includes('FROM cdks c') || !this.query.includes('ORDER BY c.id DESC')) return { results: [] };
     const limit = Number(this.values[0]) || 200;
     return {
-      results: [...this.database.rows].sort((left, right) => right.id - left.id).slice(0, limit).map((row) => {
+      results: [...this.database.rows].filter((row) => !this.query.includes('c.deleted_at IS NULL') || !row.deleted_at).sort((left, right) => right.id - left.id).slice(0, limit).map((row) => {
         const assignment = this.database.assignmentRows.find((item) => item.cdk_id === row.id);
         const promo = assignment && this.database.promoRows.find((item) => item.id === assignment.promo_code_id);
-        return { ...row, promo_scope: promo?.country ?? null, promo_suffix: promo?.code_suffix ?? null, promo_encrypted_code: promo?.encrypted_code ?? null };
+        return { ...row, promo_scope: promo?.country ?? null, promo_suffix: promo?.code_suffix ?? null, promo_encrypted_code: promo?.encrypted_code ?? null, promo_auto_delete_at: promo?.auto_delete_at ?? null, promo_deleted_at: promo?.deleted_at ?? null };
       }),
     };
   }
@@ -99,7 +110,7 @@ class MemoryStatement {
       const [codeHash, encryptedCode, codeSuffix, country, batchName, importedAt] = this.values;
       if (this.database.promoRows.some((row) => row.code_hash === codeHash)) return { meta: { changes: 0 } };
       const id = this.database.nextPromoId++;
-      this.database.promoRows.push({ id, code_hash: codeHash, encrypted_code: encryptedCode, code_suffix: codeSuffix, country, batch_name: batchName, imported_at: importedAt, deleted_at: null });
+      this.database.promoRows.push({ id, code_hash: codeHash, encrypted_code: encryptedCode, code_suffix: codeSuffix, country, batch_name: batchName, imported_at: importedAt, redeemed_at: null, auto_delete_at: null, deleted_at: null });
       return { meta: { changes: 1, last_row_id: id } };
     }
 
@@ -107,19 +118,36 @@ class MemoryStatement {
       const [codeHash, assignedAt] = this.values;
       const cdk = this.database.rows.find((row) => row.code_hash === codeHash);
       const promo = this.database.promoRows
-        .filter((row) => !row.deleted_at && !this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id))
+        .filter((row) => !row.deleted_at && !row.auto_delete_at && !this.database.assignmentRows.some((assignment) => assignment.promo_code_id === row.id))
         .sort((left, right) => left.id - right.id)[0];
       if (!cdk || !promo || this.database.assignmentRows.some((row) => row.cdk_id === cdk.id)) return { meta: { changes: 0 } };
       this.database.assignmentRows.push({ cdk_id: cdk.id, promo_code_id: promo.id, assigned_at: assignedAt });
       return { meta: { changes: 1 } };
     }
 
-    if (this.query.startsWith('UPDATE promo_codes SET deleted_at')) {
+    if (this.query.includes('SET redeemed_at = COALESCE')) {
+      const [redeemedAt, autoDeleteAt, id] = this.values;
+      const promo = this.database.promoRows.find((row) => row.id === Number(id) && !row.deleted_at);
+      if (!promo) return { meta: { changes: 0 } };
+      promo.redeemed_at ||= redeemedAt;
+      promo.auto_delete_at ||= autoDeleteAt;
+      return { meta: { changes: 1 } };
+    }
+
+    if (this.query.startsWith('UPDATE promo_codes SET deleted_at') && this.query.includes('auto_delete_at = NULL')) {
       const [deletedAt, id] = this.values;
       const promo = this.database.promoRows.find((row) => row.id === Number(id) && !row.deleted_at);
-      if (!promo || this.database.assignmentRows.some((row) => row.promo_code_id === promo.id)) return { meta: { changes: 0 } };
+      if (!promo) return { meta: { changes: 0 } };
       promo.deleted_at = deletedAt;
+      promo.auto_delete_at = null;
       return { meta: { changes: 1 } };
+    }
+
+    if (this.query.startsWith('UPDATE promo_codes SET deleted_at') && this.query.includes('auto_delete_at <= ?1')) {
+      const [deletedAt] = this.values;
+      const rows = this.database.promoRows.filter((row) => !row.deleted_at && row.auto_delete_at && row.auto_delete_at <= deletedAt);
+      rows.forEach((row) => { row.deleted_at = deletedAt; });
+      return { meta: { changes: rows.length } };
     }
 
     if (this.query.startsWith('INSERT INTO proxy_routes')) {
@@ -176,21 +204,33 @@ class MemoryStatement {
         code_suffix: codeSuffix,
         label,
         kind: admin ? 'admin' : 'standard',
-        max_uses: 1,
+        max_uses: admin ? 1 : 2_147_483_647,
         use_count: 0,
         created_at: createdAt,
+        activated_at: null,
         expires_at: expiresAt,
         encrypted_code: encryptedCode,
         revoked_at: null,
+        deleted_at: null,
         last_used_at: null,
       });
       return { meta: { changes: 1, last_row_id: id } };
     }
 
+    if (this.query.includes('SET activated_at = ?1, expires_at = ?2')) {
+      const [activatedAt, expiresAt, id] = this.values;
+      const row = this.database.rows.find((item) => item.id === Number(id));
+      const activatable = row && row.kind === 'standard' && !row.activated_at && !row.deleted_at && !row.revoked_at && row.expires_at > activatedAt;
+      if (!activatable) return { meta: { changes: 0 } };
+      row.activated_at = activatedAt;
+      row.expires_at = expiresAt;
+      return { meta: { changes: 1 } };
+    }
+
     if (this.query.includes('SET use_count = use_count + 1')) {
       const [now, id] = this.values;
       const row = this.database.rows.find((item) => item.id === Number(id));
-      const active = row && row.kind === 'standard' && !row.revoked_at && row.expires_at > now && row.use_count < row.max_uses;
+      const active = row && row.kind === 'standard' && row.activated_at && !row.deleted_at && !row.revoked_at && row.expires_at > now && (row.max_uses === 2_147_483_647 || row.use_count < row.max_uses);
       if (!active) return { meta: { changes: 0 } };
       row.use_count += 1;
       row.last_used_at = now;
@@ -199,9 +239,18 @@ class MemoryStatement {
 
     if (this.query.includes('SET last_used_at = ?1') && this.query.includes("kind = 'admin'")) {
       const [now, id] = this.values;
-      const row = this.database.rows.find((item) => item.id === Number(id) && item.kind === 'admin' && !item.revoked_at);
+      const row = this.database.rows.find((item) => item.id === Number(id) && item.kind === 'admin' && !item.revoked_at && !item.deleted_at);
       if (!row) return { meta: { changes: 0 } };
       row.last_used_at = now;
+      return { meta: { changes: 1 } };
+    }
+
+    if (this.query.startsWith('UPDATE cdks SET deleted_at = ?1')) {
+      const [deletedAt, id] = this.values;
+      const row = this.database.rows.find((item) => item.id === Number(id) && !item.deleted_at);
+      if (!row) return { meta: { changes: 0 } };
+      row.deleted_at = deletedAt;
+      row.revoked_at ||= deletedAt;
       return { meta: { changes: 1 } };
     }
 
@@ -212,7 +261,7 @@ class MemoryStatement {
         rows.forEach((row) => { row.revoked_at = revokedAt; });
         return { meta: { changes: rows.length } };
       }
-      const row = this.database.rows.find((item) => item.id === Number(id) && !item.revoked_at);
+      const row = this.database.rows.find((item) => item.id === Number(id) && !item.revoked_at && !item.deleted_at);
       if (!row) return { meta: { changes: 0 } };
       row.revoked_at = revokedAt;
       return { meta: { changes: 1 } };
@@ -472,6 +521,57 @@ test('promo inventory paginates and filters without returning every record', asy
   assert.equal(secondPage.records.every((record) => record.state === 'available'), true);
 });
 
+test('admin marks an assigned promo sold, hides its plaintext and scheduled cleanup removes it', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const promo = env.DB.promoRows[0];
+  const soldResponse = await adminRequest(env, `/api/admin/promos/${promo.id}/sold`, { method: 'POST' });
+  const sold = await soldResponse.json();
+
+  assert.equal(soldResponse.status, 200);
+  assert.equal(sold.sold, true);
+  assert.ok(sold.autoDeleteAt);
+  assert.equal(new Date(sold.autoDeleteAt) - new Date(sold.redeemedAt), 24 * 60 * 60 * 1_000);
+
+  const repeatedResponse = await adminRequest(env, `/api/admin/promos/${promo.id}/sold`, { method: 'POST' });
+  const repeated = await repeatedResponse.json();
+  assert.equal(repeated.autoDeleteAt, sold.autoDeleteAt);
+
+  const listResponse = await adminRequest(env, '/api/admin/promos?state=sold');
+  const listText = await listResponse.text();
+  const list = JSON.parse(listText);
+  assert.equal(list.stats.sold, 1);
+  assert.equal(list.stats.assigned, 0);
+  assert.equal(list.records[0].state, 'sold');
+  assert.equal(list.records[0].code.includes('•'), true);
+  assert.equal(listText.includes(issued.promoCode), false);
+
+  const cdkListResponse = await adminRequest(env, '/api/admin/cdks');
+  const cdkListText = await cdkListResponse.text();
+  const cdkList = JSON.parse(cdkListText);
+  assert.equal(cdkList.records[0].promoLocked, true);
+  assert.equal(cdkList.records[0].promoSold, true);
+  assert.equal(cdkList.records[0].promoCode.includes('•'), true);
+  assert.equal(cdkListText.includes(issued.promoCode), false);
+
+  promo.auto_delete_at = new Date(Date.now() - 1_000).toISOString();
+  await worker.scheduled({}, env, {});
+  assert.ok(promo.deleted_at);
+  const afterCleanup = await adminRequest(env, '/api/admin/promos');
+  assert.equal((await afterCleanup.json()).records.length, 0);
+});
+
+test('admin can manually delete an assigned promo', async () => {
+  const env = createEnv();
+  await issueCdk(env);
+  const response = await adminRequest(env, `/api/admin/promos/${env.DB.promoRows[0].id}`, { method: 'DELETE' });
+  assert.equal(response.status, 200);
+  assert.ok(env.DB.promoRows[0].deleted_at);
+  assert.equal(env.DB.assignmentRows.length, 1);
+  const listResponse = await adminRequest(env, '/api/admin/promos');
+  assert.equal((await listResponse.json()).records.length, 0);
+});
+
 test('CDK generation atomically assigns distinct global promo codes and exposes plaintext once', async () => {
   const env = createEnv();
   const promos = [
@@ -495,7 +595,7 @@ test('CDK generation atomically assigns distinct global promo codes and exposes 
   assert.equal(issueResponse.status, 201);
   assert.equal(new Set(issued.codes.map((record) => record.promoCode)).size, 2);
   assert.deepEqual(new Set(issued.codes.map((record) => record.promoCode)), new Set(promos));
-  assert.equal(issued.codes.every((record) => record.maxUses === 1), true);
+  assert.equal(issued.codes.every((record) => record.maxUses === null && record.repeatable === true), true);
   assert.equal(issued.codes.every((record) => new Date(record.expiresAt) - new Date(env.DB.rows[0].created_at) === 24 * 60 * 60 * 1_000), true);
   assert.equal(env.DB.assignmentRows.length, 2);
 
@@ -503,7 +603,8 @@ test('CDK generation atomically assigns distinct global promo codes and exposes 
   const listText = await listResponse.text();
   const list = JSON.parse(listText);
   assert.equal(list.records.every((record) => record.kind === 'standard'), true);
-  assert.equal(list.records.every((record) => record.maxUses === 1), true);
+  assert.equal(list.records.every((record) => record.maxUses === null && record.repeatable === true), true);
+  assert.equal(list.records.every((record) => record.state === 'pending'), true);
   assert.equal(listText.includes('AAAAAAAAAAAAAAA1'), true);
   assert.equal(listText.includes('AAAAAAAAAAAAAAA2'), true);
   assert.equal(list.records.every((record) => record.legacyCode === false), true);
@@ -555,7 +656,24 @@ test('admin can visualize and revoke a CDK while D1 stores only ciphertext', asy
   assert.equal((await verifyResponse.json()).error, 'cdk_revoked');
 });
 
-test('CDK verification does not consume a use', async () => {
+test('admin can delete a CDK without releasing its assigned promo', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const deleteResponse = await adminRequest(env, `/api/admin/cdks/${issued.id}/delete`, { method: 'DELETE' });
+  assert.equal(deleteResponse.status, 200);
+  assert.ok(env.DB.rows[0].deleted_at);
+  assert.equal(env.DB.assignmentRows.length, 1);
+
+  const listResponse = await adminRequest(env, '/api/admin/cdks');
+  assert.equal((await listResponse.json()).records.length, 0);
+  const verifyResponse = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cdk: issued.code }),
+  }), env);
+  assert.equal(verifyResponse.status, 401);
+  assert.equal((await verifyResponse.json()).error, 'cdk_invalid');
+});
+
+test('CDK verification activates a three-hour repeatable window without consuming a use', async () => {
   const env = createEnv();
   const issued = await issueCdk(env);
   const response = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
@@ -568,8 +686,11 @@ test('CDK verification does not consume a use', async () => {
   assert.equal(response.status, 200);
   assert.equal(data.kind, 'standard');
   assert.equal(data.unlimited, false);
-  assert.equal(data.remainingUses, 1);
+  assert.equal(data.repeatable, true);
+  assert.equal(data.remainingUses, null);
   assert.equal(env.DB.rows[0].use_count, 0);
+  assert.ok(env.DB.rows[0].activated_at);
+  assert.equal(new Date(data.expiresAt) - new Date(data.activatedAt), 3 * 60 * 60 * 1_000);
   assert.equal('code' in data, false);
 });
 
@@ -642,8 +763,8 @@ test('admin universal CDK is reusable, consumes no promo and rotates the previou
   assert.equal((await newVerify.json()).unlimited, true);
 });
 
-test('checkout consumes CDK once, uses selected relay and enforces server currency', async () => {
-  const env = createEnv();
+test('checkout reuses a CDK for country changes, marks its registered promo sold and enforces currency', async () => {
+  const env = createEnv(['US', 'JP']);
   delete env.RELAY_CONFIG;
   delete env.PROXY_ENCRYPTION_KEY;
   const issued = await issueCdk(env);
@@ -669,6 +790,7 @@ test('checkout consumes CDK once, uses selected relay and enforces server curren
         country: 'US',
         currency: 'EUR',
         workspaceName: 'testWorkspace',
+        promoCode: issued.promoCode,
         seatDefault: 1,
         seatProlite: 1,
         billingPeriod: 'year',
@@ -684,8 +806,14 @@ test('checkout consumes CDK once, uses selected relay and enforces server curren
     assert.equal(data.ok, true);
     assert.equal(data.proxyUsed, true);
     assert.equal(data.currency, 'USD');
-    assert.equal(data.cdkRemainingUses, 0);
+    assert.equal(data.cdkRemainingUses, null);
+    assert.equal(data.cdkRepeatable, true);
+    assert.equal(data.cdkUseCount, 1);
+    assert.equal(data.promoCleanupScheduled, true);
     assert.equal(env.DB.rows[0].use_count, 1);
+    assert.ok(env.DB.promoRows[0].redeemed_at);
+    assert.ok(env.DB.promoRows[0].auto_delete_at);
+    const firstAutoDeleteAt = env.DB.promoRows[0].auto_delete_at;
     assert.equal(capturedUrl, relayUrl);
     assert.equal(capturedInit.headers.Authorization, 'Bearer ' + relayToken);
     assert.equal(capturedInit.headers['X-Relay-Country'], 'US');
@@ -709,15 +837,89 @@ test('checkout consumes CDK once, uses selected relay and enforces server curren
       body: JSON.stringify({
         cdk: issued.code,
         accessToken: 'eyJ' + 'a'.repeat(80),
-        country: 'US',
+        country: 'JP',
+        promoCode: issued.promoCode,
         seatDefault: 1,
         seatProlite: 1,
         billingPeriod: 'year',
       }),
     }), env);
-    assert.equal(secondResponse.status, 403);
-    assert.equal((await secondResponse.json()).error, 'cdk_exhausted');
-    assert.equal(env.DB.rows[0].use_count, 1);
+    const secondData = await secondResponse.json();
+    assert.equal(secondResponse.status, 200);
+    assert.equal(secondData.country, 'JP');
+    assert.equal(secondData.currency, 'JPY');
+    assert.equal(secondData.cdkUseCount, 2);
+    assert.equal(env.DB.rows[0].use_count, 2);
+    assert.equal(env.DB.promoRows[0].auto_delete_at, firstAutoDeleteAt);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('checkout rejects an unregistered promo before calling the upstream service', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const originalFetch = globalThis.fetch;
+  let checkoutCalls = 0;
+  globalThis.fetch = async () => {
+    checkoutCalls += 1;
+    return new Response('{}', { status: 500 });
+  };
+  try {
+    const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cdk: issued.code,
+        accessToken: 'eyJ' + 'x'.repeat(80),
+        country: 'US',
+        promoCode: 'EXTERNALPROMO9999',
+        seatQuantity: 2,
+      }),
+    }), env);
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).error, 'promo_not_registered');
+    assert.equal(checkoutCalls, 0);
+    assert.equal(env.DB.rows[0].use_count, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('legacy one-use CDKs keep their original exhaustion rule after migration', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  env.DB.rows[0].max_uses = 1;
+  env.DB.rows[0].activated_at = env.DB.rows[0].created_at;
+  env.DB.rows[0].expires_at = new Date(Date.now() + 60 * 60 * 1_000).toISOString();
+  const originalFetch = globalThis.fetch;
+  let checkoutCalls = 0;
+  globalThis.fetch = async () => {
+    checkoutCalls += 1;
+    return new Response(JSON.stringify({ checkout_session_id: `oaics_legacy_${checkoutCalls}` }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const request = () => worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      cdk: issued.code,
+      accessToken: 'eyJ' + 'l'.repeat(80),
+      country: 'US',
+      promoCode: issued.promoCode,
+      seatQuantity: 2,
+    }),
+  }), env);
+  try {
+    const first = await request();
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).cdkRemainingUses, 0);
+    const second = await request();
+    assert.equal(second.status, 403);
+    assert.equal((await second.json()).error, 'cdk_exhausted');
+    assert.equal(checkoutCalls, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -746,6 +948,7 @@ test('checkout prefers an admin-imported proxy and sends it only inside the Rela
         cdk: issued.code,
         accessToken: 'eyJ' + 'b'.repeat(80),
         country: 'US',
+        promoCode: issued.promoCode,
         seatQuantity: 2,
       }),
     }), env);

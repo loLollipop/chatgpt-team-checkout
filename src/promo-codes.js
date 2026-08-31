@@ -3,6 +3,7 @@ import { decryptValue } from './encrypted-values.js';
 const MAX_PROMO_LENGTH = 240;
 const MAX_IMPORT_SIZE = 1_000;
 const GLOBAL_PROMO_SCOPE = 'GLOBAL';
+const PROMO_AUTO_DELETE_DELAY_MS = 24 * 60 * 60 * 1_000;
 
 function bytesToBase64(bytes) {
   let binary = '';
@@ -151,7 +152,7 @@ export async function decryptPromoForAdmin(encryptedCode, scope, env) {
 }
 
 async function decryptCdkForAdmin(row, env) {
-  if (!row.cdk_encrypted_code || !row.cdk_kind || !env?.PROMO_ENCRYPTION_KEY) return '';
+  if (row.cdk_deleted_at || !row.cdk_encrypted_code || !row.cdk_kind || !env?.PROMO_ENCRYPTION_KEY) return '';
   try {
     const code = await decryptValue(
       row.cdk_encrypted_code,
@@ -166,16 +167,19 @@ async function decryptCdkForAdmin(row, env) {
 
 function publicPromoRecord(row, code, cdkCode) {
   const assigned = row.cdk_id != null;
+  const sold = Boolean(row.auto_delete_at);
   return {
     id: Number(row.id),
     maskedCode: maskedPromo(row),
-    code: code || maskedPromo(row),
+    code: sold ? maskedPromo(row) : (code || maskedPromo(row)),
     batchName: row.batch_name || '',
     importedAt: row.imported_at,
-    state: assigned ? 'assigned' : 'available',
+    state: sold ? 'sold' : (assigned ? 'assigned' : 'available'),
     assignedAt: row.assigned_at || '',
     assignedCdkId: assigned ? Number(row.cdk_id) : null,
     assignedCdk: assigned ? (cdkCode || '••••-••••-••••-' + row.cdk_suffix) : '',
+    redeemedAt: row.redeemed_at || '',
+    autoDeleteAt: row.auto_delete_at || '',
   };
 }
 
@@ -185,15 +189,20 @@ export async function listPromoCodes(env, options = {}) {
   const limit = Number.isInteger(limitValue) && limitValue > 0 && limitValue <= 100 ? limitValue : 20;
   const pageValue = Number(options.page || 1);
   const page = Number.isInteger(pageValue) && pageValue > 0 ? pageValue : 1;
-  const state = ['available', 'assigned'].includes(options.state) ? options.state : 'all';
+  const requestedState = options.state === 'scheduled' ? 'sold' : options.state;
+  const state = ['available', 'assigned', 'sold'].includes(requestedState) ? requestedState : 'all';
   const stateCondition = state === 'available'
-    ? ' AND a.cdk_id IS NULL'
-    : (state === 'assigned' ? ' AND a.cdk_id IS NOT NULL' : '');
+    ? ' AND a.cdk_id IS NULL AND p.auto_delete_at IS NULL'
+    : (state === 'assigned'
+        ? ' AND a.cdk_id IS NOT NULL AND p.auto_delete_at IS NULL'
+        : (state === 'sold' ? ' AND p.auto_delete_at IS NOT NULL' : ''));
   const offset = (page - 1) * limit;
   const result = await env.DB.prepare(
     `SELECT p.id, p.encrypted_code, p.code_suffix, p.country, p.batch_name, p.imported_at,
+            p.redeemed_at, p.auto_delete_at,
             a.cdk_id, a.assigned_at, c.code_suffix AS cdk_suffix,
-            c.encrypted_code AS cdk_encrypted_code, c.kind AS cdk_kind
+            c.encrypted_code AS cdk_encrypted_code, c.kind AS cdk_kind,
+            c.deleted_at AS cdk_deleted_at
      FROM promo_codes p
      LEFT JOIN cdk_promo_assignments a ON a.promo_code_id = p.id
      LEFT JOIN cdks c ON c.id = a.cdk_id
@@ -207,8 +216,9 @@ export async function listPromoCodes(env, options = {}) {
   )));
   const statsRow = await env.DB.prepare(
     `SELECT COUNT(*) AS total,
-            SUM(CASE WHEN a.cdk_id IS NULL THEN 1 ELSE 0 END) AS available,
-            SUM(CASE WHEN a.cdk_id IS NOT NULL THEN 1 ELSE 0 END) AS assigned
+            SUM(CASE WHEN a.cdk_id IS NULL AND p.auto_delete_at IS NULL THEN 1 ELSE 0 END) AS available,
+            SUM(CASE WHEN a.cdk_id IS NOT NULL AND p.auto_delete_at IS NULL THEN 1 ELSE 0 END) AS assigned,
+            SUM(CASE WHEN p.auto_delete_at IS NOT NULL THEN 1 ELSE 0 END) AS sold
      FROM promo_codes p
      LEFT JOIN cdk_promo_assignments a ON a.promo_code_id = p.id
      WHERE p.deleted_at IS NULL`
@@ -228,6 +238,7 @@ export async function listPromoCodes(env, options = {}) {
       total: Number(statsRow?.total || 0),
       available: Number(statsRow?.available || 0),
       assigned: Number(statsRow?.assigned || 0),
+      sold: Number(statsRow?.sold || 0),
     },
     pagination: {
       page,
@@ -245,6 +256,7 @@ export async function availablePromoCount(env) {
     `SELECT COUNT(*) AS available
      FROM promo_codes p
      WHERE p.deleted_at IS NULL
+       AND p.auto_delete_at IS NULL
        AND NOT EXISTS (
          SELECT 1 FROM cdk_promo_assignments a WHERE a.promo_code_id = p.id
        )`
@@ -278,14 +290,66 @@ export async function deletePromoCode(idValue, env) {
   if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'invalid_promo_id' };
   const deletedAt = new Date().toISOString();
   const result = await env.DB.prepare(
-    `UPDATE promo_codes SET deleted_at = ?1
-     WHERE id = ?2 AND deleted_at IS NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM cdk_promo_assignments a WHERE a.promo_code_id = promo_codes.id
-       )`
+    `UPDATE promo_codes
+     SET deleted_at = ?1, auto_delete_at = NULL
+     WHERE id = ?2 AND deleted_at IS NULL`
   ).bind(deletedAt, id).run();
   if (Number(result?.meta?.changes || 0) !== 1) {
-    return { ok: false, error: 'promo_not_found_or_assigned' };
+    return { ok: false, error: 'promo_not_found' };
   }
   return { ok: true, id, deletedAt };
+}
+
+export async function validateRegisteredPromoCode(value, env) {
+  if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
+  const promoCode = normalizePromoCode(value);
+  if (!promoCode) return { ok: false, error: 'invalid_promo_code' };
+  const codeHash = await hashPromoCode(promoCode, env.PROMO_ENCRYPTION_KEY);
+  const row = await env.DB.prepare(
+    `SELECT id FROM promo_codes
+     WHERE code_hash = ?1 AND deleted_at IS NULL LIMIT 1`
+  ).bind(codeHash).first();
+  if (!row) return { ok: false, error: 'promo_not_registered' };
+  return { ok: true, promoId: Number(row.id), promoCode };
+}
+
+export async function markPromoForAutoDelete(idValue, env, nowValue = new Date()) {
+  if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
+  const id = Number(idValue);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'invalid_promo_id' };
+  const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  if (Number.isNaN(now.getTime())) return { ok: false, error: 'invalid_promo_timestamp' };
+  const redeemedAt = now.toISOString();
+  const autoDeleteAt = new Date(now.getTime() + PROMO_AUTO_DELETE_DELAY_MS).toISOString();
+  const result = await env.DB.prepare(
+    `UPDATE promo_codes
+     SET redeemed_at = COALESCE(redeemed_at, ?1),
+         auto_delete_at = COALESCE(auto_delete_at, ?2)
+     WHERE id = ?3 AND deleted_at IS NULL`
+  ).bind(redeemedAt, autoDeleteAt, id).run();
+  if (Number(result?.meta?.changes || 0) !== 1) return { ok: false, error: 'promo_not_found' };
+  const row = await env.DB.prepare(
+    `SELECT redeemed_at, auto_delete_at FROM promo_codes WHERE id = ?1 LIMIT 1`
+  ).bind(id).first();
+  return {
+    ok: true,
+    id,
+    redeemedAt: row?.redeemed_at || redeemedAt,
+    autoDeleteAt: row?.auto_delete_at || autoDeleteAt,
+  };
+}
+
+export async function cleanupExpiredPromoCodes(env, nowValue = new Date()) {
+  if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
+  const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  if (Number.isNaN(now.getTime())) return { ok: false, error: 'invalid_promo_timestamp' };
+  const deletedAt = now.toISOString();
+  const result = await env.DB.prepare(
+    `UPDATE promo_codes
+     SET deleted_at = ?1
+     WHERE deleted_at IS NULL
+       AND auto_delete_at IS NOT NULL
+       AND auto_delete_at <= ?1`
+  ).bind(deletedAt).run();
+  return { ok: true, deletedAt, deletedCount: Number(result?.meta?.changes || 0) };
 }
