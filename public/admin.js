@@ -2,6 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const elements = {
+  loadingView: $('#admin-loading'),
   loginView: $('#login-view'), loginForm: $('#login-form'), adminToken: $('#admin-token'), loginButton: $('#login-button'), loginStatus: $('#login-status'),
   app: $('#admin-app'), sidebar: $('#sidebar'), backdrop: $('#mobile-backdrop'), menuButton: $('#menu-button'), logoutButton: $('#logout-button'), refreshButton: $('#refresh-button'),
   pageTitle: $('#page-title'), pageEyebrow: $('#page-eyebrow'), globalStatus: $('#global-status'), serviceDot: $('#service-dot'), serviceTitle: $('#service-title'), serviceDetail: $('#service-detail'),
@@ -231,15 +232,15 @@ function navigate(view) {
 }
 function openSidebar() { elements.sidebar.classList.add('open'); elements.backdrop.hidden = false; }
 function closeSidebar() { elements.sidebar.classList.remove('open'); elements.backdrop.hidden = true; }
-function showLogin() { state.token = ''; elements.adminToken.value = ''; elements.app.hidden = true; elements.loginView.hidden = false; closeSidebar(); setStatus(elements.globalStatus); setTimeout(() => elements.adminToken.focus(), 50); }
+function showAdmin() { elements.loadingView.hidden = true; elements.loginView.hidden = true; elements.app.hidden = false; }
+function showLogin() { state.token = ''; elements.adminToken.value = ''; elements.loadingView.hidden = true; elements.app.hidden = true; elements.loginView.hidden = false; closeSidebar(); setStatus(elements.globalStatus); setTimeout(() => elements.adminToken.focus(), 50); }
 async function logout() { await fetch('/api/admin/session', { method: 'DELETE' }).catch(() => {}); showLogin(); }
 
 async function restoreAdminSession() {
   try {
     await adminFetch('/api/admin/session');
     await loadAllData();
-    elements.loginView.hidden = true;
-    elements.app.hidden = false;
+    showAdmin();
     navigate('overview');
     return true;
   } catch {
@@ -248,7 +249,7 @@ async function restoreAdminSession() {
   }
 }
 
-elements.loginForm.addEventListener('submit', async (event) => { event.preventDefault(); const token = elements.adminToken.value; if (!token) { setStatus(elements.loginStatus, '请输入管理员密码。', 'error'); return; } state.token = token; setButtonLoading(elements.loginButton, true, '正在登录…', '进入管理后台'); setStatus(elements.loginStatus, '正在校验并创建安全登录会话…', 'info'); try { await adminFetch('/api/admin/session', { method: 'POST', body: '{}' }); state.token = ''; await loadAllData(); elements.adminToken.value = ''; elements.loginView.hidden = true; elements.app.hidden = false; setStatus(elements.loginStatus); navigate('overview'); } catch (error) { state.token = ''; setStatus(elements.loginStatus, error.message, 'error'); } finally { setButtonLoading(elements.loginButton, false, '正在登录…', '进入管理后台'); } });
+elements.loginForm.addEventListener('submit', async (event) => { event.preventDefault(); const token = elements.adminToken.value; if (!token) { setStatus(elements.loginStatus, '请输入管理员密码。', 'error'); return; } state.token = token; setButtonLoading(elements.loginButton, true, '正在登录…', '进入管理后台'); setStatus(elements.loginStatus, '正在校验并创建安全登录会话…', 'info'); try { await adminFetch('/api/admin/session', { method: 'POST', body: '{}' }); state.token = ''; await loadAllData(); elements.adminToken.value = ''; showAdmin(); setStatus(elements.loginStatus); navigate('overview'); } catch (error) { state.token = ''; setStatus(elements.loginStatus, error.message, 'error'); } finally { setButtonLoading(elements.loginButton, false, '正在登录…', '进入管理后台'); } });
 elements.logoutButton.addEventListener('click', logout); elements.menuButton.addEventListener('click', openSidebar); elements.backdrop.addEventListener('click', closeSidebar);
 $$('.nav-item').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view))); $$('[data-open-view]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.openView)));
 elements.refreshButton.addEventListener('click', async () => { setButtonLoading(elements.refreshButton, true, '刷新中…', '刷新数据'); setStatus(elements.globalStatus, '正在刷新全部数据…', 'info'); try { await loadAllData(); setStatus(elements.globalStatus, '数据已刷新。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } finally { setButtonLoading(elements.refreshButton, false, '刷新中…', '刷新数据'); } });

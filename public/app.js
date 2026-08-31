@@ -92,6 +92,8 @@ const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 const state = {
   config: null,
   activeCdk: '',
+  cdkExpiresAtMs: 0,
+  cdkExpiryTimer: null,
   country: null,
   tokenVisible: false,
   exchange: { status: 'loading', rates: null, live: false, source: '', updatedAt: null },
@@ -527,7 +529,48 @@ function updateCdkChip(details) {
   elements.cdkRemaining.textContent = `剩余 ${remainingUses} 次${expiry ? ` · 有效至 ${expiry}` : ''}`;
 }
 
+function clearCdkExpiryTimer() {
+  if (state.cdkExpiryTimer) clearTimeout(state.cdkExpiryTimer);
+  state.cdkExpiryTimer = null;
+  state.cdkExpiresAtMs = 0;
+}
+
+function expireCdkSession() {
+  if (!state.activeCdk) return;
+  lockWorkbench();
+  setStatus(elements.cdkStatus, '当前 CDK 已过期，请输入新的 CDK 后继续使用。', 'error');
+}
+
+function armCdkExpiryTimer() {
+  const remaining = state.cdkExpiresAtMs - Date.now();
+  if (remaining <= 0) {
+    expireCdkSession();
+    return;
+  }
+  state.cdkExpiryTimer = setTimeout(armCdkExpiryTimer, Math.min(remaining + 50, 2_147_000_000));
+}
+
+function scheduleCdkExpiry(details) {
+  clearCdkExpiryTimer();
+  if (details.unlimited || details.kind === 'admin' || details.cdkKind === 'admin') return true;
+  const expiresAt = details.expiresAt || details.cdkExpiresAt;
+  const expiresAtMs = new Date(expiresAt).getTime();
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return false;
+  state.cdkExpiresAtMs = expiresAtMs;
+  armCdkExpiryTimer();
+  return true;
+}
+
+function enforceCdkExpiry() {
+  if (state.activeCdk && state.cdkExpiresAtMs && Date.now() >= state.cdkExpiresAtMs) expireCdkSession();
+}
+
 function unlockWorkbench(verification) {
+  if (!scheduleCdkExpiry(verification)) {
+    lockWorkbench();
+    setStatus(elements.cdkStatus, '当前 CDK 已过期，请输入新的 CDK 后继续使用。', 'error');
+    return;
+  }
   elements.gateView.hidden = true;
   elements.workbench.hidden = false;
   updateCdkChip(verification);
@@ -537,6 +580,7 @@ function unlockWorkbench(verification) {
 
 function lockWorkbench({ clearSession = true } = {}) {
   if (clearSession) fetch('/api/cdk/session', { method: 'DELETE' }).catch(() => {});
+  clearCdkExpiryTimer();
   state.activeCdk = '';
   elements.accessToken.value = '';
   elements.promoCode.value = '';
@@ -585,6 +629,9 @@ elements.cdkForm.addEventListener('submit', async (event) => {
 });
 
 elements.lockButton.addEventListener('click', () => lockWorkbench());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) enforceCdkExpiry(); });
+window.addEventListener('focus', enforceCdkExpiry);
+window.addEventListener('pageshow', enforceCdkExpiry);
 elements.countryTrigger.addEventListener('click', () => {
   if (elements.countryMenu.hidden) openCountryMenu(); else closeCountryMenu();
 });
@@ -679,6 +726,10 @@ elements.form.addEventListener('submit', async (event) => {
     elements.resultUrl.value = data.url;
     elements.openResult.href = data.url;
     elements.resultCard.hidden = false;
+    if (!scheduleCdkExpiry(data)) {
+      expireCdkSession();
+      return;
+    }
     updateCdkChip(data);
     const cleanupText = data.promoCleanupScheduled && data.promoAutoDeleteAt
       ? ` 该优惠码将在 ${formatExpiry(data.promoAutoDeleteAt)} 后自动从后台清理。`

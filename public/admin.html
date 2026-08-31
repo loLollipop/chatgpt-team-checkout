@@ -10,7 +10,15 @@
     <script defer src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT" crossorigin="anonymous"></script>
   </head>
   <body>
-    <main id="login-view" class="login-view">
+    <main id="admin-loading" class="admin-loading" aria-live="polite" aria-busy="true">
+      <section class="admin-loading-card">
+        <span class="logo"><img src="/chatgpt-logo.svg" alt="" /></span>
+        <div><span class="eyebrow">Team Console</span><strong>正在恢复登录状态</strong><small>请稍候，正在安全校验后台会话…</small></div>
+        <span class="admin-loading-spinner" aria-hidden="true"></span>
+      </section>
+    </main>
+
+    <main id="login-view" class="login-view" hidden>
       <section class="login-card">
         <div class="login-brand"><span class="logo"><img src="/chatgpt-logo.svg" alt="ChatGPT 官方 Logo" /></span><span><b>ChatGPT Team</b><small>长链工作台 · 管理后台</small></span></div>
         <div class="login-copy"><span class="eyebrow">Administrator</span><h1>欢迎回来</h1><p>登录后可管理 CDK、优惠码库存和国家代理。验证成功后会安全保持登录，主动退出或凭证失效时才需重输密码。</p></div>
