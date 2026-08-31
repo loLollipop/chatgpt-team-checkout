@@ -34,7 +34,6 @@ const elements = {
   seatMessage: $('#seat-message'),
   workspaceName: $('#workspace-name'),
   promoCode: $('#promo-code'),
-  promoHint: $('#promo-hint'),
   formStatus: $('#form-status'),
   generateButton: $('#generate-button'),
   generateLabel: $('#generate-label'),
@@ -431,39 +430,28 @@ function renderPricing() {
   if (!country) return;
   const annual = currentBillingPeriod() === 'year';
   const price = orderPrice(country);
+  const standardSeat = seatPrice(country, 'standard');
   const seats = seatValues();
-  const standardOfficial = officialSeatUsd('standard');
   const proliteOfficial = officialSeatUsd('prolite');
   elements.priceFlag.replaceChildren(flagImage(country, 'flag-img flag-img-lg'));
   elements.priceCountry.textContent = `${country.name} · ${country.code}`;
-  elements.priceCurrency.textContent = `${country.currency} 自动结算 · 标准/高级分别计价`;
-  elements.priceLocalLabel.textContent = annual ? '当地预计年付' : '当地预计月付';
-  elements.priceUsdLabel.textContent = annual ? '预计年付美元' : '预计月付美元';
-  elements.priceLocal.textContent = formatLocalAmount(country, price.total.local);
-  elements.priceUsd.textContent = formatUsdAmount(price.total.usd);
+  elements.priceCurrency.textContent = `${country.currency} 自动结算 · 标准单席参考`;
+  elements.priceLocalLabel.textContent = annual ? '当地标准单席年付' : '当地标准单席月付';
+  elements.priceUsdLabel.textContent = annual ? '标准单席年付美元' : '标准单席月付美元';
+  elements.priceLocal.textContent = formatLocalAmount(country, standardSeat.local);
+  elements.priceUsd.textContent = formatUsdAmount(standardSeat.usd);
   elements.summaryDefault.textContent = `${seats.standard} × ${formatUsdAmount(price.standardSeat.usd)} = ${formatUsdAmount(price.standardSubtotal.usd)}`;
   elements.summaryProlite.textContent = `${seats.prolite} × ${formatUsdAmount(price.proliteSeat.usd)} = ${formatUsdAmount(price.proliteSubtotal.usd)}`;
   elements.summaryDiscount.textContent = price.promo.eligible
     ? `− ${formatUsdAmount(price.discount.usd)}`
     : (price.promo.reason ? '当前订单不适用' : '未使用');
   elements.summaryPrice.textContent = formatUsdAmount(price.total.usd);
-  const promoText = price.promo.eligible ? `，优惠码抵扣 ${formatUsdAmount(price.discount.usd)}` : '';
-  elements.fxNote.textContent = `官方基准：标准 ${formatUsdAmount(standardOfficial)}，高级 ${formatUsdAmount(proliteOfficial)}${annual ? '/席/年' : '/席/月'}${promoText}；地区金额按实时汇率估算，最终以 ChatGPT Checkout 为准。`;
+  elements.fxNote.textContent = `当前展示标准单席价格；高级席位 ${formatUsdAmount(proliteOfficial)}${annual ? '/席/年' : '/席/月'}。实际订单金额以右侧预览和 ChatGPT Checkout 为准。`;
 }
 
 function updatePromoState() {
   const selection = promoSelection();
-  const annual = currentBillingPeriod() === 'year';
-  const hasStandardSeat = seatValues().standard > 0;
   elements.promoCode.setAttribute('aria-invalid', String(Boolean(selection.reason)));
-  elements.promoHint.classList.toggle('seat-invalid', Boolean(selection.reason));
-  if (annual) {
-    elements.promoHint.textContent = '年付订单不支持优惠码；请切换月付后使用。';
-  } else if (!hasStandardSeat) {
-    elements.promoHint.textContent = '优惠码只能抵扣标准席位；纯高级席位订单不可使用。';
-  } else {
-    elements.promoHint.textContent = '固定抵扣 $25，仅作用于月付订单中的标准席位；高级席位不参与优惠。';
-  }
 }
 
 function openCountryMenu() {
