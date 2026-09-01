@@ -108,6 +108,30 @@ class MemoryStatement {
   }
 
   async run() {
+    if (this.query.startsWith('UPDATE cdks SET expires_at = COALESCE')) {
+      const targetId = this.query.includes('AND id = ?1') ? Number(this.values[0]) : null;
+      let changes = 0;
+      this.database.rows.forEach((row) => {
+        if (
+          row.kind !== 'standard' ||
+          row.max_uses !== 2_147_483_647 ||
+          !row.activated_at ||
+          row.deleted_at ||
+          row.revoked_at ||
+          (targetId && row.id !== targetId)
+        ) return;
+        const assignment = this.database.assignmentRows.find((item) => item.cdk_id === row.id);
+        const promo = assignment && this.database.promoRows.find((item) => item.id === assignment.promo_code_id);
+        const desiredExpiry = promo?.auto_delete_at || new Date(
+          new Date(row.activated_at).getTime() + 24 * 60 * 60 * 1_000
+        ).toISOString();
+        if (row.expires_at === desiredExpiry) return;
+        row.expires_at = desiredExpiry;
+        changes += 1;
+      });
+      return { meta: { changes } };
+    }
+
     if (this.query.startsWith('DELETE FROM cdk_promo_assignments')) {
       const [codeHash] = this.values;
       const promo = this.database.promoRows.find((row) => row.code_hash === codeHash && row.deleted_at);
@@ -808,6 +832,46 @@ test('CDK verification activates a 24-hour repeatable window without consuming a
   assert.ok(env.DB.rows[0].activated_at);
   assert.equal(new Date(data.expiresAt) - new Date(data.activatedAt), 24 * 60 * 60 * 1_000);
   assert.equal('code' in data, false);
+});
+
+test('old active customer CDKs are repaired to the new 24-hour lifetime on verification', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cdk: issued.code }),
+  }), env);
+
+  const activatedAt = new Date(Date.now() - 4 * 60 * 60 * 1_000).toISOString();
+  env.DB.rows[0].activated_at = activatedAt;
+  env.DB.rows[0].expires_at = new Date(Date.now() - 60 * 60 * 1_000).toISOString();
+
+  const response = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cdk: issued.code }),
+  }), env);
+  const data = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(data.expiresAt, new Date(new Date(activatedAt).getTime() + 24 * 60 * 60 * 1_000).toISOString());
+  assert.equal(env.DB.rows[0].expires_at, data.expiresAt);
+});
+
+test('admin CDK list aligns old customer CDKs with an assigned promo cleanup deadline', async () => {
+  const env = createEnv();
+  await issueCdk(env);
+  env.DB.rows[0].activated_at = new Date(Date.now() - 60 * 60 * 1_000).toISOString();
+  env.DB.rows[0].expires_at = new Date(Date.now() + 2 * 60 * 60 * 1_000).toISOString();
+  env.DB.promoRows[0].auto_delete_at = new Date(Date.now() + 20 * 60 * 60 * 1_000).toISOString();
+
+  const response = await adminRequest(env, '/api/admin/cdks?limit=20');
+  const data = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(data.records[0].expiresAt, env.DB.promoRows[0].auto_delete_at);
+  assert.equal(env.DB.rows[0].expires_at, env.DB.promoRows[0].auto_delete_at);
 });
 
 test('a promo already on its 24-hour clock caps its linked CDK at the same expiry', async () => {

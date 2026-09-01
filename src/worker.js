@@ -1,4 +1,13 @@
-import { createAdminCdk, createCdks, deleteCdk, listCdks, revokeCdk, verifyCdk, verifyCdkId } from './cdk.js';
+import {
+  createAdminCdk,
+  createCdks,
+  deleteCdk,
+  listCdks,
+  revokeCdk,
+  synchronizeCustomerCdkExpiry,
+  verifyCdk,
+  verifyCdkId,
+} from './cdk.js';
 import {
   deleteProxyRoute,
   getProxyRoute,
@@ -1408,8 +1417,11 @@ export default {
     return jsonResponse({ ok: false, error: 'not_found', path: url.pathname }, 404, {}, env);
   },
   async scheduled(_controller, env, ctx) {
-    const cleanup = safePromoOperation(() => cleanupExpiredPromoCodes(env));
-    if (ctx?.waitUntil) ctx.waitUntil(cleanup);
-    else await cleanup;
+    const maintenance = Promise.all([
+      safeCdkOperation(() => synchronizeCustomerCdkExpiry(env)),
+      safePromoOperation(() => cleanupExpiredPromoCodes(env)),
+    ]);
+    if (ctx?.waitUntil) ctx.waitUntil(maintenance);
+    else await maintenance;
   },
 };
