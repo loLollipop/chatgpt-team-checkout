@@ -347,6 +347,20 @@ export async function markPromoForAutoDelete(idValue, env, nowValue = new Date()
      WHERE id = ?3 AND deleted_at IS NULL`
   ).bind(redeemedAt, autoDeleteAt, id).run();
   if (Number(result?.meta?.changes || 0) !== 1) return { ok: false, error: 'promo_not_found' };
+  // 客户 CDK 与其已绑定优惠码共享结束时间；重复提链不会延后任一方的期限。
+  await env.DB.prepare(
+    `UPDATE cdks
+     SET expires_at = (
+       SELECT p.auto_delete_at FROM promo_codes p WHERE p.id = ?1 LIMIT 1
+     )
+     WHERE kind = 'standard'
+       AND activated_at IS NOT NULL
+       AND deleted_at IS NULL
+       AND revoked_at IS NULL
+       AND id IN (
+         SELECT a.cdk_id FROM cdk_promo_assignments a WHERE a.promo_code_id = ?1
+       )`
+  ).bind(id).run();
   const row = await env.DB.prepare(
     `SELECT redeemed_at, auto_delete_at FROM promo_codes WHERE id = ?1 LIMIT 1`
   ).bind(id).first();

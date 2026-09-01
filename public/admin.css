@@ -307,6 +307,66 @@ td code { font-size: 13px; }
 .proxy-country small, .proxy-meta { font-size: 12px; }
 .proxy-url, .proxy-actions button { font-size: 12px; }
 
+/* ============================================================
+   运营控制台布局与数据工作区
+   ============================================================ */
+body { color: #15231e; background: #f4f6f5; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+.sidebar { width: 248px; padding: 22px 16px 18px; border-right-color: #e4eae7; box-shadow: 10px 0 34px -32px rgba(18,34,27,.45); }
+.sidebar-brand { padding: 2px 8px 28px; }
+.nav-item { position: relative; padding-right: 12px; padding-left: 12px; }
+.nav-item.active::before { position: absolute; top: 10px; bottom: 10px; left: -16px; width: 3px; border-radius: 0 4px 4px 0; background: var(--accent); content: ""; }
+.admin-main { margin-left: 248px; }
+.admin-header { min-height: 88px; padding: 0 34px; background: rgba(244,246,245,.9); }
+.header-copy { display: grid; gap: 1px; }
+.header-copy h1 { margin: 1px 0 0; }
+.header-copy p { margin: 0; color: #7a8781; font-size: 12px; }
+.content { width: min(1360px, calc(100% - 56px)); padding: 28px 0 72px; }
+.view { gap: 20px; }
+.panel { border-color: #e1e8e4; border-radius: 18px; box-shadow: 0 10px 32px -28px rgba(20,37,30,.35); }
+.stat-card { min-height: 124px; border-color: #e1e8e4; box-shadow: 0 10px 30px -28px rgba(20,37,30,.4); }
+.stat-card strong { font-variant-numeric: tabular-nums; }
+.cdk-control-card { min-height: 380px; }
+.issued-panel:has(.issued-bundles:empty) .panel-heading { margin-bottom: 0; }
+.issued-panel:has(.issued-bundles:empty) .empty-state { min-height: 96px; }
+
+.table-heading { align-items: center !important; }
+.table-heading > div:first-child { min-width: 260px; }
+.table-control-stack { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: min(100%, 580px); }
+.table-search { display: flex; width: min(100%, 300px); min-height: 40px; align-items: center; gap: 8px; padding: 0 11px; border: 1px solid var(--line); border-radius: 10px; color: #85918c; background: #fbfcfb; }
+.table-search:focus-within { border-color: var(--accent); background: #fff; box-shadow: 0 0 0 3px rgba(16,163,127,.09); }
+.table-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 13px; }
+.table-meta-bar { display: flex; min-height: 46px; align-items: center; justify-content: space-between; gap: 14px; padding: 0 21px; border-bottom: 1px solid var(--soft-line); color: var(--muted); background: #fcfdfc; font-size: 12px; }
+.table-meta-bar label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.table-meta-bar select { min-height: 30px; padding: 0 26px 0 9px; border: 1px solid var(--line); border-radius: 8px; outline: 0; color: var(--ink); background: #fff; font-size: 12px; }
+.filter-pills { overflow-x: auto; flex: none; scrollbar-width: none; }
+.filter-pills::-webkit-scrollbar { display: none; }
+.filter-pills button { min-height: 32px; padding: 0 11px; white-space: nowrap; }
+.table-wrap { scrollbar-color: #cbd6d1 transparent; }
+.table-wrap table { min-width: 1040px; }
+thead { position: sticky; top: 0; z-index: 2; }
+th { padding-top: 12px; padding-bottom: 12px; background: #f8faf9; }
+td { height: 62px; }
+tbody tr { transition: background .15s ease; }
+tbody tr:hover { background: #fbfdfc; }
+th:first-child, td:first-child { position: sticky; left: 0; z-index: 1; background: #fff; box-shadow: 8px 0 14px -16px rgba(20,37,30,.65); }
+th:first-child { z-index: 3; background: #f8faf9; }
+th:last-child, td:last-child { position: sticky; right: 0; z-index: 1; background: #fff; box-shadow: -8px 0 14px -16px rgba(20,37,30,.65); }
+th:last-child { z-index: 3; background: #f8faf9; }
+tbody tr:hover td:first-child, tbody tr:hover td:last-child { background: #fbfdfc; }
+.table-action { min-height: 30px; padding: 0 10px; font-weight: 700; }
+.pagination-bar { min-height: 64px; }
+.pagination-bar .button { min-width: 78px; }
+
+.proxy-cards { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); padding: 18px 20px 22px; }
+.proxy-card { min-height: 176px; padding: 16px; border-radius: 14px; background: #fff; }
+.proxy-card:not(.proxy-unconfigured) { border-color: #d7e7e0; box-shadow: 0 7px 20px -18px rgba(20,37,30,.4); }
+.proxy-actions button { min-height: 36px; }
+.proxy-empty { display: grid; grid-column: 1 / -1; min-height: 150px; place-content: center; gap: 5px; color: var(--muted); text-align: center; }
+.proxy-empty b { color: var(--ink); font-size: 15px; }
+.proxy-empty p { margin: 0; font-size: 13px; }
+
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .mobile-backdrop { position: fixed; inset: 0; z-index: 35; background: rgba(20,28,25,.35); backdrop-filter: blur(2px); }
 @media (max-width: 1080px) {
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -323,6 +383,7 @@ td code { font-size: 13px; }
   .menu-button { display: block; }
   .admin-header { padding: 0 16px; }
   .admin-header > div:nth-child(2) { margin-right: auto; margin-left: 10px; }
+  .header-copy p { display: none; }
   .content { width: calc(100% - 26px); padding-top: 18px; }
   .overview-grid, .page-grid { grid-template-columns: 1fr; }
   .welcome-panel { align-items: flex-start; flex-direction: column; }
@@ -342,7 +403,14 @@ td code { font-size: 13px; }
   .admin-cdk-result { grid-template-columns: 1fr; }
   .admin-cdk-result button { width: 100%; }
   .admin-access-meta { grid-template-columns: 1fr; }
-  .filter-pills { display: none; }
+  .table-heading { align-items: stretch !important; flex-direction: column; }
+  .table-control-stack { width: 100%; min-width: 0; align-items: stretch; flex-direction: column; }
+  .table-search { width: 100%; max-width: none; }
+  .filter-pills { display: flex; width: 100%; }
+  .table-meta-bar { padding: 0 15px; }
+  .pagination-bar { padding: 12px 15px; }
+  .pagination-bar .button { min-width: 70px; padding: 0 10px; }
+  .proxy-cards { padding: 14px; }
   .welcome-panel { padding: 23px 20px; }
   .welcome-panel h2 { font-size: 22px; }
 }

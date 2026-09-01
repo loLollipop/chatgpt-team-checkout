@@ -78,11 +78,27 @@
           </div>
         </section>
 
+        <nav class="workflow-rail" aria-label="提链步骤">
+          <div class="workflow-progress" aria-hidden="true"><span id="workflow-progress"></span></div>
+          <button class="workflow-step active" type="button" data-workflow-target="account-section" aria-current="step">
+            <span>01</span><span><b>账户凭证</b><small>Session JSON</small></span><i aria-hidden="true">✓</i>
+          </button>
+          <button class="workflow-step" type="button" data-workflow-target="region-section">
+            <span>02</span><span><b>地区与账期</b><small>国家、代理与价格</small></span><i aria-hidden="true">✓</i>
+          </button>
+          <button class="workflow-step" type="button" data-workflow-target="seat-section">
+            <span>03</span><span><b>团队席位</b><small>标准 + 高级 ≥ 2</small></span><i aria-hidden="true">✓</i>
+          </button>
+          <button class="workflow-step" type="button" data-workflow-target="order-section">
+            <span>04</span><span><b>订单信息</b><small>名称与优惠码</small></span><i aria-hidden="true">✓</i>
+          </button>
+        </nav>
+
         <div class="workspace-grid">
           <form id="checkout-form" class="workbench-card form-card" novalidate>
 
             <!-- 01 账户凭证 -->
-            <section class="form-section">
+            <section id="account-section" class="form-section" data-workflow-section="account-section">
               <div class="section-title-row">
                 <div><span class="step-number">01</span><h2>账户凭证</h2></div>
                 <span class="section-tag">必填</span>
@@ -109,7 +125,7 @@
             </section>
 
             <!-- 02 地区与账期 -->
-            <section class="form-section">
+            <section id="region-section" class="form-section" data-workflow-section="region-section">
               <div class="section-title-row">
                 <div><span class="step-number">02</span><h2>地区与账期</h2></div>
                 <span class="section-tag section-tag-live"><i class="live-dot" aria-hidden="true"></i>汇率同步</span>
@@ -163,7 +179,7 @@
             </section>
 
             <!-- 03 团队席位 -->
-            <section class="form-section">
+            <section id="seat-section" class="form-section" data-workflow-section="seat-section">
               <div class="section-title-row">
                 <div><span class="step-number">03</span><h2>团队席位</h2></div>
                 <span id="seat-total-chip" class="section-tag section-tag-dark">共 2 席</span>
@@ -192,7 +208,7 @@
             </section>
 
             <!-- 04 订单信息 -->
-            <section class="form-section form-section-last">
+            <section id="order-section" class="form-section form-section-last" data-workflow-section="order-section">
               <div class="section-title-row">
                 <div><span class="step-number">04</span><h2>订单信息</h2></div>
                 <span class="section-tag section-tag-muted">可选</span>
@@ -209,11 +225,17 @@
               </div>
             </section>
 
-            <div id="form-status" class="inline-status form-status" role="status" aria-live="polite"></div>
-            <button id="generate-button" class="button button-primary submit-button" type="submit">
-              <span id="generate-label">生成支付长链</span>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
-            </button>
+            <div class="form-submit-zone">
+              <div class="submit-readiness">
+                <span id="submit-readiness-dot" aria-hidden="true"></span>
+                <div><b id="submit-readiness-title">还需完成必填项</b><small id="submit-readiness-detail">请先填写 Session，并确认国家与席位。</small></div>
+              </div>
+              <div id="form-status" class="inline-status form-status" role="status" aria-live="polite"></div>
+              <button id="generate-button" class="button button-primary submit-button" type="submit">
+                <span id="generate-label">生成支付长链</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
+              </button>
+            </div>
           </form>
 
           <!-- 侧栏 -->

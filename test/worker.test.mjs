@@ -4,6 +4,8 @@ import test from 'node:test';
 
 import worker from '../src/worker.js';
 
+const cdkExpiryMigration = await readFile(new URL('../migrations/0007_align_customer_cdk_expiry.sql', import.meta.url), 'utf8');
+
 class MemoryStatement {
   constructor(database, query) {
     this.database = database;
@@ -157,6 +159,16 @@ class MemoryStatement {
       return { meta: { changes: 1 } };
     }
 
+    if (this.query.startsWith('UPDATE cdks SET expires_at = ( SELECT p.auto_delete_at')) {
+      const [promoId] = this.values;
+      const promo = this.database.promoRows.find((row) => row.id === Number(promoId));
+      const assignment = this.database.assignmentRows.find((row) => row.promo_code_id === Number(promoId));
+      const cdk = assignment && this.database.rows.find((row) => row.id === assignment.cdk_id && row.kind === 'standard' && row.activated_at && !row.deleted_at && !row.revoked_at);
+      if (!promo?.auto_delete_at || !cdk) return { meta: { changes: 0 } };
+      cdk.expires_at = promo.auto_delete_at;
+      return { meta: { changes: 1 } };
+    }
+
     if (this.query.startsWith('UPDATE promo_codes SET deleted_at') && this.query.includes('auto_delete_at = NULL')) {
       const [deletedAt, id] = this.values;
       const promo = this.database.promoRows.find((row) => row.id === Number(id) && !row.deleted_at);
@@ -240,13 +252,15 @@ class MemoryStatement {
       return { meta: { changes: 1, last_row_id: id } };
     }
 
-    if (this.query.includes('SET activated_at = ?1, expires_at = ?2')) {
+    if (this.query.includes('SET activated_at = ?1') && this.query.includes('expires_at = MIN')) {
       const [activatedAt, expiresAt, id] = this.values;
       const row = this.database.rows.find((item) => item.id === Number(id));
       const activatable = row && row.kind === 'standard' && !row.activated_at && !row.deleted_at && !row.revoked_at && row.expires_at > activatedAt;
       if (!activatable) return { meta: { changes: 0 } };
+      const assignment = this.database.assignmentRows.find((item) => item.cdk_id === row.id);
+      const promo = assignment && this.database.promoRows.find((item) => item.id === assignment.promo_code_id);
       row.activated_at = activatedAt;
-      row.expires_at = expiresAt;
+      row.expires_at = promo?.auto_delete_at && promo.auto_delete_at < expiresAt ? promo.auto_delete_at : expiresAt;
       return { meta: { changes: 1 } };
     }
 
@@ -331,6 +345,12 @@ function createEnv(proxyCountries = ['US']) {
     DB: new MemoryD1(),
   };
 }
+
+test('CDK expiry migration aligns existing customer records to 24 hours or promo cleanup', () => {
+  assert.match(cdkExpiryMigration, /activated_at, '\+24 hours'/);
+  assert.match(cdkExpiryMigration, /p\.auto_delete_at/);
+  assert.match(cdkExpiryMigration, /max_uses = 2147483647/);
+});
 
 async function adminRequest(env, path, options = {}) {
   return worker.fetch(new Request('https://checkout.example' + path, {
@@ -769,7 +789,7 @@ test('admin can delete a CDK without releasing its assigned promo', async () => 
   assert.equal((await verifyResponse.json()).error, 'cdk_invalid');
 });
 
-test('CDK verification activates a three-hour repeatable window without consuming a use', async () => {
+test('CDK verification activates a 24-hour repeatable window without consuming a use', async () => {
   const env = createEnv();
   const issued = await issueCdk(env);
   const response = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
@@ -786,8 +806,26 @@ test('CDK verification activates a three-hour repeatable window without consumin
   assert.equal(data.remainingUses, null);
   assert.equal(env.DB.rows[0].use_count, 0);
   assert.ok(env.DB.rows[0].activated_at);
-  assert.equal(new Date(data.expiresAt) - new Date(data.activatedAt), 3 * 60 * 60 * 1_000);
+  assert.equal(new Date(data.expiresAt) - new Date(data.activatedAt), 24 * 60 * 60 * 1_000);
   assert.equal('code' in data, false);
+});
+
+test('a promo already on its 24-hour clock caps its linked CDK at the same expiry', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const soldResponse = await adminRequest(env, `/api/admin/promos/${env.DB.promoRows[0].id}/sold`, { method: 'POST' });
+  const sold = await soldResponse.json();
+  const verifyResponse = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cdk: issued.code }),
+  }), env);
+  const verification = await verifyResponse.json();
+
+  assert.equal(soldResponse.status, 200);
+  assert.equal(verifyResponse.status, 200);
+  assert.equal(verification.expiresAt, sold.autoDeleteAt);
+  assert.equal(env.DB.rows[0].expires_at, sold.autoDeleteAt);
 });
 
 test('an active CDK session survives refresh and can create checkout without resending plaintext CDK', async () => {
@@ -965,6 +1003,9 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
     assert.equal(data.cdkRepeatable, true);
     assert.equal(data.cdkUseCount, 1);
     assert.equal(data.promoCleanupScheduled, true);
+    assert.equal(data.cdkExpiresAt, data.promoAutoDeleteAt);
+    assert.equal(env.DB.rows[0].expires_at, env.DB.promoRows[0].auto_delete_at);
+    assert.match(response.headers.get('set-cookie') || '', /^team_cdk_session=/);
     assert.equal(env.DB.rows[0].use_count, 1);
     assert.ok(env.DB.promoRows[0].redeemed_at);
     assert.ok(env.DB.promoRows[0].auto_delete_at);
@@ -1008,6 +1049,7 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
     assert.equal(secondData.cdkUseCount, 2);
     assert.equal(env.DB.rows[0].use_count, 2);
     assert.equal(env.DB.promoRows[0].auto_delete_at, firstAutoDeleteAt);
+    assert.equal(secondData.cdkExpiresAt, firstAutoDeleteAt);
     assert.equal(secondCheckoutPayload.promo_code, issued.promoCode);
   } finally {
     globalThis.fetch = originalFetch;

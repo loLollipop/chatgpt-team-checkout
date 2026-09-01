@@ -6,7 +6,7 @@ const CDK_GROUPS = 4;
 const CDK_GROUP_LENGTH = 4;
 const MAX_BATCH_SIZE = 50;
 const STANDARD_CDK_ACTIVATION_WINDOW_MS = 24 * 60 * 60 * 1_000;
-const STANDARD_CDK_ACTIVE_LIFETIME_MS = 3 * 60 * 60 * 1_000;
+const STANDARD_CDK_ACTIVE_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 // 兼容初始表的 CHECK (max_uses > 0)；对外仍以 repeatable=true / maxUses=null 表示不限次数。
 const STANDARD_CDK_REPEATABLE_SENTINEL = 2_147_483_647;
 const CDK_KIND_STANDARD = 'standard';
@@ -184,7 +184,20 @@ export async function verifyCdk(value, env, options = {}) {
     const activatedUntil = new Date(now.getTime() + STANDARD_CDK_ACTIVE_LIFETIME_MS).toISOString();
     await env.DB.prepare(
       `UPDATE cdks
-       SET activated_at = ?1, expires_at = ?2
+       SET activated_at = ?1,
+           expires_at = MIN(
+             ?2,
+             COALESCE(
+               (
+                 SELECT p.auto_delete_at
+                 FROM cdk_promo_assignments a
+                 JOIN promo_codes p ON p.id = a.promo_code_id
+                 WHERE a.cdk_id = ?3 AND p.auto_delete_at IS NOT NULL
+                 LIMIT 1
+               ),
+               ?2
+             )
+           )
        WHERE id = ?3
          AND kind = 'standard'
          AND activated_at IS NULL

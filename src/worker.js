@@ -1233,13 +1233,32 @@ async function handleTeamCheckout(request, env) {
     if (result.status >= 200 && result.status < 300) {
       const { url, sessionId } = resolveCheckoutUrl(result.data);
       if (url) {
-        const cdkUsage = submittedCdk
-          ? await safeCdkOperation(() => verifyCdk(submittedCdk, env, { consume: true }))
-          : await cdkSessionAuthorization(request, env, { consume: true });
         const promoLifecycle = promoAuthorization.promoId
           ? await safePromoOperation(() => markPromoForAutoDelete(promoAuthorization.promoId, env))
           : { ok: true, autoDeleteAt: '' };
+        // 优惠码首次售出会把已绑定客户 CDK 的结束时间同步为同一个 24 小时时刻。
+        const cdkUsage = submittedCdk
+          ? await safeCdkOperation(() => verifyCdk(submittedCdk, env, { consume: true }))
+          : await cdkSessionAuthorization(request, env, { consume: true });
         const usage = cdkUsage.ok ? cdkUsage : cdkAuthorization;
+        const responseHeaders = {};
+        if (!usage.unlimited && usage.id && usage.expiresAt) {
+          const refreshedExpiryMs = new Date(usage.expiresAt).getTime();
+          if (Number.isFinite(refreshedExpiryMs) && refreshedExpiryMs > Date.now()) {
+            const refreshedSession = await createSignedSession(
+              'cdk',
+              { cdkId: usage.id },
+              env.CDK_HASH_PEPPER,
+              refreshedExpiryMs
+            );
+            responseHeaders['Set-Cookie'] = sessionCookie(
+              request,
+              CDK_SESSION_COOKIE,
+              refreshedSession,
+              refreshedExpiryMs
+            );
+          }
+        }
         return jsonResponse(
           {
             ok: true,
@@ -1265,7 +1284,7 @@ async function handleTeamCheckout(request, env) {
             attempts,
           },
           200,
-          {},
+          responseHeaders,
           env
         );
       }

@@ -50,7 +50,7 @@
       <div class="admin-main">
         <header class="admin-header">
           <button id="menu-button" class="menu-button" type="button" aria-label="打开导航">☰</button>
-          <div><span id="page-eyebrow" class="eyebrow">Dashboard</span><h1 id="page-title">运营概览</h1></div>
+          <div class="header-copy"><span id="page-eyebrow" class="eyebrow">Dashboard</span><h1 id="page-title">运营概览</h1><p id="page-description">掌握授权、库存与代理健康状态。</p></div>
           <div class="header-actions"><button id="refresh-button" class="button button-secondary button-small" type="button">刷新数据</button><div class="admin-avatar">A</div></div>
         </header>
 
@@ -79,7 +79,7 @@
                     <label>内部备注<input id="cdk-label" type="text" maxlength="80" placeholder="例如：客户 A / 订单号" /></label>
                     <label>生成数量<input id="cdk-count" type="number" min="1" max="50" value="1" /></label>
                   </div>
-                  <div class="fixed-rule"><span>固定规则</span><div><b>24 小时内激活 · 激活后 3 小时可重复提链</b><small>有效期从首次校验开始计算 · 当前全球库存 <strong id="cdk-inventory-hint">—</strong> 条</small></div></div>
+                  <div class="fixed-rule"><span>固定规则</span><div><b>24 小时内激活 · 激活后 24 小时可重复提链</b><small>使用已绑定优惠码成功后，CDK 与优惠码在同一时刻结束 · 当前全球库存 <strong id="cdk-inventory-hint">—</strong> 条</small></div></div>
                   <div class="control-card-actions"><button id="cdk-create-button" class="button button-primary" type="submit">生成并分配优惠码</button><div id="cdk-create-status" class="status" role="status" aria-live="polite"></div></div>
                 </form>
               </section>
@@ -98,7 +98,18 @@
               </section>
             </div>
             <section class="panel issued-panel"><div class="panel-heading"><div><span class="eyebrow">Delivery preview</span><h3>本次客户 CDK 交付结果</h3><p>生成后可一键复制“自助提链 / CDK / 优惠码”完整交付文本。</p></div><button id="copy-all-bundles" class="button button-secondary button-small" type="button" hidden>复制全部</button></div><div id="issued-empty" class="empty-state"><span>◇</span><b>还没有新生成的客户 CDK</b><p>完成上方客户 CDK 表单后，交付结果会显示在这里。</p></div><div id="issued-bundles" class="issued-bundles"></div></section>
-            <section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">Access records</span><h3>CDK 可视化记录</h3><p>客户 CDK 可停用或彻底移出列表；删除不会回收已经分配的优惠码。</p></div><div class="filter-pills"><button class="active" type="button" data-cdk-filter="all">全部</button><button type="button" data-cdk-filter="active">有效</button><button type="button" data-cdk-filter="inactive">失效</button></div></div><div class="table-wrap"><table><thead><tr><th>CDK</th><th>类型</th><th>备注</th><th>优惠码</th><th>使用规则</th><th>生命周期</th><th>状态</th><th>操作</th></tr></thead><tbody id="cdk-table-body"></tbody></table></div></section>
+            <section class="panel table-panel">
+              <div class="panel-heading table-heading">
+                <div><span class="eyebrow">Access records</span><h3>CDK 可视化记录</h3><p>支持搜索、状态筛选与分页；删除不会回收已分配优惠码。</p></div>
+                <div class="table-control-stack">
+                  <label class="table-search"><span aria-hidden="true">⌕</span><input id="cdk-search" type="search" autocomplete="off" placeholder="搜索 CDK、备注或优惠码" aria-label="搜索 CDK" /></label>
+                  <div class="filter-pills" aria-label="CDK 状态筛选"><button class="active" type="button" data-cdk-filter="all">全部</button><button type="button" data-cdk-filter="active">有效</button><button type="button" data-cdk-filter="inactive">失效</button></div>
+                </div>
+              </div>
+              <div class="table-meta-bar"><span id="cdk-results-count">共 0 条记录</span><label>每页<select id="cdk-page-size"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select>条</label></div>
+              <div class="table-wrap"><table><thead><tr><th>CDK</th><th>类型</th><th>备注</th><th>优惠码</th><th>使用规则</th><th>生命周期</th><th>状态</th><th>操作</th></tr></thead><tbody id="cdk-table-body"></tbody></table></div>
+              <div class="pagination-bar"><span id="cdk-page-info">第 1 / 1 页</span><div><button id="cdk-prev-page" class="button button-secondary button-small" type="button">上一页</button><button id="cdk-next-page" class="button button-secondary button-small" type="button">下一页</button></div></div>
+            </section>
           </section>
 
           <section class="view" data-view-panel="promos" hidden>
@@ -112,13 +123,18 @@
               </form></section>
               <section class="panel inventory-guide"><div class="panel-heading"><div><span class="eyebrow">Allocation rules</span><h3>优惠码同步规则</h3></div></div><ol><li><span>1</span><div><b>后台库存白名单</b><p>工作台只接受后台登记并绑定的优惠码，外部优惠码会被拒绝。</p></div></li><li><span>2</span><div><b>自动标记已使用</b><p>提链成功后隐藏完整代码，防止管理员再次复制发给其他用户。</p></div></li><li><span>3</span><div><b>客户仍可重复提链</b><p>标记不影响原客户使用；CDK 有效期内可继续换国家提链，直到上游提示优惠码不再符合条件。</p></div></li></ol><div class="format-preview"><span>交付格式</span><pre>自助提链：https://你的站点/&#10;CDK：XXXX-XXXX-XXXX-XXXX&#10;优惠码：E3NW9QBJZXKNM9ZE</pre></div></section>
             </div>
-            <section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">Global inventory</span><h3>全球优惠码可视化明细</h3><p>外部自行提链后可手动标记“已使用”；完整代码会隐藏，但绑定客户在 CDK 有效期内仍可重复提链。</p></div><div class="filter-pills"><button class="active" type="button" data-promo-filter="all">全部</button><button type="button" data-promo-filter="available">可用</button><button type="button" data-promo-filter="assigned">已分配</button><button type="button" data-promo-filter="sold">已使用</button></div></div><div class="table-wrap"><table><thead><tr><th>优惠码</th><th>批次</th><th>导入时间</th><th>分配 CDK</th><th>后台清理时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="promo-table-body"></tbody></table></div><div class="pagination-bar"><span id="promo-page-info">第 1 页</span><div><button id="promo-prev-page" class="button button-secondary button-small" type="button">上一页</button><button id="promo-next-page" class="button button-secondary button-small" type="button">下一页</button></div></div></section>
+            <section class="panel table-panel">
+              <div class="panel-heading table-heading"><div><span class="eyebrow">Global inventory</span><h3>全球优惠码明细</h3><p>按状态分页查看；已使用代码会隐藏，绑定客户在 CDK 有效期内仍可继续提链。</p></div><div class="filter-pills" aria-label="优惠码状态筛选"><button class="active" type="button" data-promo-filter="all">全部</button><button type="button" data-promo-filter="available">可用</button><button type="button" data-promo-filter="assigned">已分配</button><button type="button" data-promo-filter="sold">已使用</button></div></div>
+              <div class="table-meta-bar"><span id="promo-results-count">正在读取库存…</span><label>每页<select id="promo-page-size"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select>条</label></div>
+              <div class="table-wrap"><table><thead><tr><th>优惠码</th><th>批次</th><th>导入时间</th><th>分配 CDK</th><th>后台清理时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="promo-table-body"></tbody></table></div>
+              <div class="pagination-bar"><span id="promo-page-info">第 1 页</span><div><button id="promo-prev-page" class="button button-secondary button-small" type="button">上一页</button><button id="promo-next-page" class="button button-secondary button-small" type="button">下一页</button></div></div>
+            </section>
           </section>
 
           <section class="view" data-view-panel="proxies" hidden>
             <div class="page-grid proxy-grid"><section class="panel"><div class="panel-heading"><div><span class="eyebrow">Single route</span><h3>单个导入</h3><p>支持带用户名和密码的 HTTP / HTTPS 代理。</p></div></div><form id="proxy-single-form" class="admin-form" novalidate><label>国家<select id="proxy-country"></select></label><label>代理 URL<input id="proxy-url" type="password" autocomplete="off" placeholder="http://user:password@host:port" /></label><button id="proxy-save-button" class="button button-primary" type="submit">保存并加密</button><div id="proxy-single-status" class="status" role="status" aria-live="polite"></div></form></section>
               <section class="panel"><div class="panel-heading"><div><span class="eyebrow">Batch routes</span><h3>批量导入</h3><p>每行一条 COUNTRY=URL，或粘贴 JSON 对象。</p></div></div><form id="proxy-batch-form" class="admin-form" novalidate><label>代理配置<textarea id="proxy-batch" rows="7" placeholder="US=http://user:pass@host:port&#10;GB=http://user:pass@host:port"></textarea></label><button id="proxy-batch-button" class="button button-secondary" type="submit">批量保存</button><div id="proxy-batch-status" class="status" role="status" aria-live="polite"></div></form></section></div>
-            <section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">Route health</span><h3>国家代理状态</h3></div><span class="panel-note">测试会通过 Relay 获取出口 IP 与延迟</span></div><div id="proxy-grid" class="proxy-cards"></div></section>
+            <section class="panel table-panel"><div class="panel-heading table-heading"><div><span class="eyebrow">Route health</span><h3>国家代理状态</h3><p id="proxy-results-count">正在读取代理配置…</p></div><div class="filter-pills proxy-filters" aria-label="代理状态筛选"><button class="active" type="button" data-proxy-filter="all">全部</button><button type="button" data-proxy-filter="configured">已配置</button><button type="button" data-proxy-filter="healthy">健康</button><button type="button" data-proxy-filter="attention">需处理</button></div></div><div id="proxy-grid" class="proxy-cards"></div></section>
           </section>
         </main>
       </div>

@@ -37,6 +37,10 @@ const elements = {
   formStatus: $('#form-status'),
   generateButton: $('#generate-button'),
   generateLabel: $('#generate-label'),
+  workflowProgress: $('#workflow-progress'),
+  submitReadiness: $('.submit-readiness'),
+  submitReadinessTitle: $('#submit-readiness-title'),
+  submitReadinessDetail: $('#submit-readiness-detail'),
   summaryFlag: $('#summary-flag'),
   summaryCountry: $('#summary-country'),
   summaryRoute: $('#summary-route'),
@@ -99,6 +103,10 @@ const state = {
   exchange: { status: 'loading', rates: null, live: false, source: '', updatedAt: null },
   exchangePromise: null,
 };
+
+const workflowSteps = [...document.querySelectorAll('[data-workflow-target]')];
+const workflowSections = [...document.querySelectorAll('[data-workflow-section]')];
+let workflowScrollFrame = 0;
 
 function setStatus(element, message = '', type = '') {
   element.textContent = message;
@@ -423,6 +431,7 @@ function selectCountry(code) {
   elements.summaryCountry.textContent = `${country.name} · ${country.currency}`;
   elements.summaryRoute.textContent = country.proxyConfigured ? '专属国家代理已就绪' : '该国家代理未配置';
   renderPricing();
+  updateWorkflowState();
   closeCountryMenu();
   renderCountryOptions(elements.countrySearch.value);
 }
@@ -497,7 +506,48 @@ function updateSummary() {
   elements.summaryBilling.textContent = currentBillingPeriod() === 'year' ? '年付' : '月付';
   updatePromoState();
   renderPricing();
+  updateWorkflowState();
   return valid;
+}
+
+function updateWorkflowState() {
+  const seats = seatValues();
+  const promo = promoSelection();
+  const checks = {
+    'account-section': Boolean(extractToken(elements.accessToken.value)),
+    'region-section': Boolean(state.country?.proxyConfigured),
+    'seat-section': seats.standard >= 0 && seats.prolite >= 0 && seats.total >= 2 && seats.total <= 999,
+    'order-section': !promo.reason,
+  };
+  workflowSteps.forEach((step) => { step.dataset.state = checks[step.dataset.workflowTarget] ? 'complete' : 'pending'; });
+  const completed = Object.values(checks).filter(Boolean).length;
+  if (elements.workflowProgress) elements.workflowProgress.style.width = `${completed / Object.keys(checks).length * 100}%`;
+
+  const missing = [];
+  if (!checks['account-section']) missing.push('Session');
+  if (!checks['region-section']) missing.push('可用国家');
+  if (!checks['seat-section']) missing.push('席位数量');
+  if (!checks['order-section']) missing.push('优惠码规则');
+  const ready = missing.length === 0;
+  elements.submitReadiness.dataset.ready = String(ready);
+  elements.submitReadinessTitle.textContent = ready ? '配置已就绪' : `还需完成 ${missing.length} 项`;
+  elements.submitReadinessDetail.textContent = ready ? '提交后将通过所选国家代理创建 Checkout。' : `请检查：${missing.join('、')}。`;
+  return ready;
+}
+
+function setActiveWorkflowStep(target) {
+  workflowSteps.forEach((step) => {
+    const active = step.dataset.workflowTarget === target;
+    step.classList.toggle('active', active);
+    if (active) step.setAttribute('aria-current', 'step'); else step.removeAttribute('aria-current');
+  });
+}
+
+function syncWorkflowStepFromScroll() {
+  const activationLine = Math.min(260, window.innerHeight * 0.4);
+  let current = workflowSections[0];
+  workflowSections.forEach((section) => { if (section.getBoundingClientRect().top <= activationLine) current = section; });
+  if (current) setActiveWorkflowStep(current.id);
 }
 
 function setLoading(button, loading, labelElement, loadingText, idleText) {
@@ -592,6 +642,7 @@ function lockWorkbench({ clearSession = true } = {}) {
   elements.cdkInput.value = '';
   setStatus(elements.formStatus);
   setStatus(elements.cdkStatus);
+  updateWorkflowState();
   window.scrollTo({ top: 0, behavior: 'instant' });
   setTimeout(() => elements.cdkInput.focus(), 80);
 }
@@ -632,6 +683,17 @@ elements.lockButton.addEventListener('click', () => lockWorkbench());
 document.addEventListener('visibilitychange', () => { if (!document.hidden) enforceCdkExpiry(); });
 window.addEventListener('focus', enforceCdkExpiry);
 window.addEventListener('pageshow', enforceCdkExpiry);
+workflowSteps.forEach((step) => step.addEventListener('click', () => {
+  const section = document.getElementById(step.dataset.workflowTarget);
+  if (!section) return;
+  setActiveWorkflowStep(step.dataset.workflowTarget);
+  const top = section.getBoundingClientRect().top + window.scrollY - 88;
+  window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+}));
+window.addEventListener('scroll', () => {
+  if (workflowScrollFrame) return;
+  workflowScrollFrame = requestAnimationFrame(() => { workflowScrollFrame = 0; syncWorkflowStepFromScroll(); });
+}, { passive: true });
 elements.countryTrigger.addEventListener('click', () => {
   if (elements.countryMenu.hidden) openCountryMenu(); else closeCountryMenu();
 });
@@ -668,7 +730,10 @@ document.querySelectorAll('input[name="billing-period"]').forEach((input) => inp
 elements.promoCode.addEventListener('input', () => {
   updatePromoState();
   renderPricing();
+  updateWorkflowState();
 });
+elements.workspaceName.addEventListener('input', updateWorkflowState);
+elements.accessToken.addEventListener('input', updateWorkflowState);
 
 elements.accessToken.classList.add('token-hidden');
 elements.toggleToken.addEventListener('click', () => {
@@ -688,15 +753,20 @@ elements.form.addEventListener('submit', async (event) => {
   const accessToken = extractToken(elements.accessToken.value);
   if (!accessToken) {
     setStatus(elements.formStatus, ERROR_MESSAGES.missing_access_token, 'error');
+    setActiveWorkflowStep('account-section');
     elements.accessToken.focus();
     return;
   }
   if (!state.country?.proxyConfigured) {
     setStatus(elements.formStatus, ERROR_MESSAGES.proxy_not_configured, 'error');
+    setActiveWorkflowStep('region-section');
+    elements.countryTrigger.focus();
     return;
   }
   if (!updateSummary()) {
     setStatus(elements.formStatus, ERROR_MESSAGES.invalid_seat_quantity, 'error');
+    setActiveWorkflowStep('seat-section');
+    elements.seatDefault.focus();
     return;
   }
 
@@ -704,6 +774,7 @@ elements.form.addEventListener('submit', async (event) => {
   const selectedPromo = promoSelection();
   if (selectedPromo.reason) {
     setStatus(elements.formStatus, ERROR_MESSAGES[selectedPromo.reason], 'error');
+    setActiveWorkflowStep('order-section');
     elements.promoCode.focus();
     return;
   }
