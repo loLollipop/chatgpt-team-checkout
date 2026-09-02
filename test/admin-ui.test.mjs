@@ -5,6 +5,7 @@ import test from 'node:test';
 const adminHtml = await readFile(new URL('../public/admin.html', import.meta.url), 'utf8');
 const adminScript = await readFile(new URL('../public/admin.js', import.meta.url), 'utf8');
 const adminStyles = await readFile(new URL('../public/admin.css', import.meta.url), 'utf8');
+const customerScript = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
 
 test('admin refresh waits for session restoration before revealing login or dashboard', () => {
   assert.match(adminHtml, /id="admin-loading"/);
@@ -37,6 +38,15 @@ test('admin navigation survives refresh through the current URL hash', () => {
 });
 
 test('admin describes the synchronized 24-hour customer lifecycle', () => {
-  assert.match(adminHtml, /激活后 24 小时可重复提链/);
-  assert.match(adminHtml, /CDK 与优惠码在同一时刻结束/);
+  assert.match(adminHtml, /后台优惠码 24 小时/);
+  assert.match(adminHtml, /外部优惠码 3 小时 \/ 3 次/);
+});
+
+test('admin exposes customer checkout auditing without adding it to the customer workbench', () => {
+  assert.match(adminHtml, /<th>提链审计<\/th>/);
+  assert.match(adminScript, /record\.checkoutAudits/);
+  assert.match(adminScript, /外部码.*record\.externalUseCount/);
+  assert.match(adminStyles, /\.checkout-audit-list/);
+  assert.doesNotMatch(customerScript, /已成功.*useCount/);
+  assert.match(customerScript, /授权有效 · 可继续使用/);
 });

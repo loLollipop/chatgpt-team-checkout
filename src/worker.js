@@ -3,6 +3,7 @@ import {
   createCdks,
   deleteCdk,
   listCdks,
+  recordRestrictedCheckoutSuccess,
   revokeCdk,
   synchronizeCustomerCdkExpiry,
   verifyCdk,
@@ -22,7 +23,7 @@ import {
   listPromoCodes,
   markPromoForAutoDelete,
   normalizePromoCode,
-  validateRegisteredPromoCode,
+  resolvePromoCodeRegistration,
 } from './promo-codes.js';
 
 // ChatGPT Team 支付长链生成器 - Cloudflare Worker
@@ -1193,23 +1194,26 @@ async function handleTeamCheckout(request, env) {
     );
   }
 
-  // 先校验 CDK 或已签名的 CDK 会话。普通 CDK 只能使用后台登记的优惠码；管理员 CDK 可使用任意格式合法的优惠码。
+  // 先校验 CDK 或已签名的 CDK 会话；优惠码来源只影响客户 CDK 的生命周期策略。
   const submittedCdk = String(body.cdk || '').trim();
   const cdkAuthorization = submittedCdk
     ? await safeCdkOperation(() => verifyCdk(submittedCdk, env))
     : await cdkSessionAuthorization(request, env);
   if (!cdkAuthorization.ok) return cdkFailureResponse(cdkAuthorization, env);
 
-  let promoAuthorization = { ok: true, promoId: null, promoCode: '' };
+  let promoAuthorization = { ok: true, promoId: null, promoCode: '', registered: false };
   if (requestedPromo && cdkAuthorization.kind === 'admin') {
     const promoCode = normalizePromoCode(requestedPromo);
     promoAuthorization = promoCode
-      ? { ok: true, promoId: null, promoCode }
+      ? { ok: true, promoId: null, promoCode, registered: false }
       : { ok: false, error: 'invalid_promo_code' };
   } else if (requestedPromo) {
-    promoAuthorization = await safePromoOperation(() => validateRegisteredPromoCode(requestedPromo, env));
+    promoAuthorization = await safePromoOperation(() => resolvePromoCodeRegistration(requestedPromo, env));
   }
   if (!promoAuthorization.ok) return promoFailureResponse(promoAuthorization, env);
+  const restrictedCustomerUsage = cdkAuthorization.kind === 'standard' && (
+    cdkAuthorization.externalMode || Boolean(promoAuthorization.promoCode && !promoAuthorization.registered)
+  );
 
   const proxyResolution = await resolveCheckoutProxy(countryCode, env);
   if (!proxyResolution.ok) return proxyFailureResponse(proxyResolution, env);
@@ -1246,12 +1250,23 @@ async function handleTeamCheckout(request, env) {
           ? await safePromoOperation(() => markPromoForAutoDelete(promoAuthorization.promoId, env))
           : { ok: true, autoDeleteAt: '' };
         // 优惠码首次售出会把已绑定客户 CDK 的结束时间同步为同一个 24 小时时刻。
-        const cdkUsage = submittedCdk
-          ? await safeCdkOperation(() => verifyCdk(submittedCdk, env, { consume: true }))
-          : await cdkSessionAuthorization(request, env, { consume: true });
-        const usage = cdkUsage.ok ? cdkUsage : cdkAuthorization;
+        const cdkUsage = restrictedCustomerUsage
+          ? await safeCdkOperation(() => recordRestrictedCheckoutSuccess({
+              cdkId: cdkAuthorization.id,
+              promoCode: promoAuthorization.promoCode,
+              promoSource: promoAuthorization.promoCode
+                ? (promoAuthorization.registered ? 'registered' : 'external')
+                : 'none',
+            }, env))
+          : (submittedCdk
+              ? await safeCdkOperation(() => verifyCdk(submittedCdk, env, { consume: true }))
+              : await cdkSessionAuthorization(request, env, { consume: true }));
+        if (!cdkUsage.ok) return cdkFailureResponse(cdkUsage, env);
+        const usage = cdkUsage;
         const responseHeaders = {};
-        if (!usage.unlimited && usage.id && usage.expiresAt) {
+        if (usage.sessionActive === false) {
+          responseHeaders['Set-Cookie'] = clearSessionCookie(request, CDK_SESSION_COOKIE);
+        } else if (!usage.unlimited && usage.id && usage.expiresAt) {
           const refreshedExpiryMs = new Date(usage.expiresAt).getTime();
           if (Number.isFinite(refreshedExpiryMs) && refreshedExpiryMs > Date.now()) {
             const refreshedSession = await createSignedSession(

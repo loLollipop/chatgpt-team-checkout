@@ -332,6 +332,23 @@ export async function validateRegisteredPromoCode(value, env) {
   return { ok: true, promoId: Number(row.id), promoCode };
 }
 
+export async function resolvePromoCodeRegistration(value, env) {
+  if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
+  const promoCode = normalizePromoCode(value);
+  if (!promoCode) return { ok: false, error: 'invalid_promo_code' };
+  const codeHash = await hashPromoCode(promoCode, env.PROMO_ENCRYPTION_KEY);
+  const row = await env.DB.prepare(
+    `SELECT id FROM promo_codes
+     WHERE code_hash = ?1 AND deleted_at IS NULL LIMIT 1`
+  ).bind(codeHash).first();
+  return {
+    ok: true,
+    promoId: row ? Number(row.id) : null,
+    promoCode,
+    registered: Boolean(row),
+  };
+}
+
 export async function markPromoForAutoDelete(idValue, env, nowValue = new Date()) {
   if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
   const id = Number(idValue);
@@ -350,9 +367,13 @@ export async function markPromoForAutoDelete(idValue, env, nowValue = new Date()
   // 客户 CDK 与其已绑定优惠码共享结束时间；重复提链不会延后任一方的期限。
   await env.DB.prepare(
     `UPDATE cdks
-     SET expires_at = (
-       SELECT p.auto_delete_at FROM promo_codes p WHERE p.id = ?1 LIMIT 1
-     )
+     SET expires_at = CASE
+       WHEN external_mode_at IS NOT NULL THEN MIN(
+         expires_at,
+         (SELECT p.auto_delete_at FROM promo_codes p WHERE p.id = ?1 LIMIT 1)
+       )
+       ELSE (SELECT p.auto_delete_at FROM promo_codes p WHERE p.id = ?1 LIMIT 1)
+     END
      WHERE kind = 'standard'
        AND activated_at IS NOT NULL
        AND deleted_at IS NULL

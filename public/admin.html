@@ -79,7 +79,7 @@
                     <label>内部备注<input id="cdk-label" type="text" maxlength="80" placeholder="例如：客户 A / 订单号" /></label>
                     <label>生成数量<input id="cdk-count" type="number" min="1" max="50" value="1" /></label>
                   </div>
-                  <div class="fixed-rule"><span>固定规则</span><div><b>24 小时内激活 · 激活后 24 小时可重复提链</b><small>使用已绑定优惠码成功后，CDK 与优惠码在同一时刻结束 · 当前全球库存 <strong id="cdk-inventory-hint">—</strong> 条</small></div></div>
+                  <div class="fixed-rule"><span>固定规则</span><div><b>后台优惠码 24 小时 · 外部优惠码 3 小时 / 3 次</b><small>使用外部优惠码后自动切换受限模式并记录成功提链 · 当前全球库存 <strong id="cdk-inventory-hint">—</strong> 条</small></div></div>
                   <div class="control-card-actions"><button id="cdk-create-button" class="button button-primary" type="submit">生成并分配优惠码</button><div id="cdk-create-status" class="status" role="status" aria-live="polite"></div></div>
                 </form>
               </section>
@@ -107,7 +107,7 @@
                 </div>
               </div>
               <div class="table-meta-bar"><span id="cdk-results-count">共 0 条记录</span><label>每页<select id="cdk-page-size"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select>条</label></div>
-              <div class="table-wrap"><table><thead><tr><th>CDK</th><th>类型</th><th>备注</th><th>优惠码</th><th>使用规则</th><th>生命周期</th><th>状态</th><th>操作</th></tr></thead><tbody id="cdk-table-body"></tbody></table></div>
+              <div class="table-wrap"><table><thead><tr><th>CDK</th><th>类型</th><th>备注</th><th>分配优惠码</th><th>使用规则</th><th>提链审计</th><th>生命周期</th><th>状态</th><th>操作</th></tr></thead><tbody id="cdk-table-body"></tbody></table></div>
               <div class="pagination-bar"><span id="cdk-page-info">第 1 / 1 页</span><div><button id="cdk-prev-page" class="button button-secondary button-small" type="button">上一页</button><button id="cdk-next-page" class="button button-secondary button-small" type="button">下一页</button></div></div>
             </section>
           </section>

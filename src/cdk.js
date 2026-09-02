@@ -7,6 +7,8 @@ const CDK_GROUP_LENGTH = 4;
 const MAX_BATCH_SIZE = 50;
 const STANDARD_CDK_ACTIVATION_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const STANDARD_CDK_ACTIVE_LIFETIME_MS = 24 * 60 * 60 * 1_000;
+const EXTERNAL_PROMO_CDK_LIFETIME_MS = 3 * 60 * 60 * 1_000;
+const EXTERNAL_PROMO_CDK_MAX_USES = 3;
 // 兼容初始表的 CHECK (max_uses > 0)；对外仍以 repeatable=true / maxUses=null 表示不限次数。
 const STANDARD_CDK_REPEATABLE_SENTINEL = 2_147_483_647;
 const CDK_KIND_STANDARD = 'standard';
@@ -60,6 +62,7 @@ function recordState(row, now = new Date()) {
   if (rowKind(row) === CDK_KIND_ADMIN) return 'active';
   if (row.expires_at && new Date(row.expires_at) <= now) return 'expired';
   if (!row.activated_at) return 'pending';
+  if (Number(row.external_use_count || 0) >= EXTERNAL_PROMO_CDK_MAX_USES) return 'exhausted';
   if (Number(row.max_uses) > 0 && Number(row.use_count) >= Number(row.max_uses)) return 'exhausted';
   return 'active';
 }
@@ -73,6 +76,8 @@ function publicRecord(row, now = new Date(), revealedCode = '', revealedPromo = 
   const promoSold = Boolean(row.promo_auto_delete_at);
   const promoDeleted = Boolean(row.promo_deleted_at);
   const promoLocked = promoSold || promoDeleted;
+  const externalMode = kind === CDK_KIND_STANDARD && Boolean(row.external_mode_at);
+  const externalUseCount = Number(row.external_use_count || 0);
   return {
     id: Number(row.id),
     maskedCode: '••••-••••-••••-' + row.code_suffix,
@@ -82,6 +87,10 @@ function publicRecord(row, now = new Date(), revealedCode = '', revealedPromo = 
     kind,
     unlimited,
     repeatable,
+    externalMode,
+    externalModeAt: externalMode ? row.external_mode_at : '',
+    externalUseCount,
+    externalUseLimit: externalMode ? EXTERNAL_PROMO_CDK_MAX_USES : null,
     maxUses: unlimited || repeatable ? null : maxUses,
     useCount,
     remainingUses: unlimited || repeatable ? null : Math.max(0, maxUses - useCount),
@@ -97,6 +106,7 @@ function publicRecord(row, now = new Date(), revealedCode = '', revealedPromo = 
     promoLocked,
     promoSold,
     promoDeleted,
+    checkoutAudits: Array.isArray(row.checkout_audits) ? row.checkout_audits : [],
     state: recordState(row, now),
   };
 }
@@ -117,6 +127,9 @@ function resultFromRecord(row, now = new Date()) {
     kind: record.kind,
     unlimited: record.unlimited,
     repeatable: record.repeatable,
+    externalMode: record.externalMode,
+    externalUseCount: record.externalUseCount,
+    externalUseLimit: record.externalUseLimit,
     maxUses: record.maxUses,
     useCount: record.useCount,
     remainingUses: record.remainingUses,
@@ -127,7 +140,8 @@ function resultFromRecord(row, now = new Date()) {
 }
 
 const CDK_SELECT_COLUMNS = `id, code_suffix, label, kind, max_uses, use_count,
-  created_at, activated_at, expires_at, revoked_at, deleted_at, last_used_at`;
+  created_at, activated_at, expires_at, revoked_at, deleted_at, last_used_at,
+  external_mode_at, external_use_count`;
 
 export async function synchronizeCustomerCdkExpiry(env, idValue = null) {
   if (!env?.DB) return unavailableResult();
@@ -155,6 +169,7 @@ export async function synchronizeCustomerCdkExpiry(env, idValue = null) {
        AND activated_at IS NOT NULL
        AND deleted_at IS NULL
        AND revoked_at IS NULL
+       AND external_mode_at IS NULL
        AND expires_at IS NOT COALESCE(
          (
            SELECT p.auto_delete_at
@@ -275,6 +290,81 @@ export async function verifyCdkId(idValue, env, options = {}) {
   return verifyCdkRow(row, env, options, new Date());
 }
 
+export async function recordRestrictedCheckoutSuccess(input, env, nowValue = new Date()) {
+  if (!visualEncryptionReady(env)) return unavailableResult();
+  const id = Number(input?.cdkId);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'cdk_invalid' };
+  const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  if (Number.isNaN(now.getTime())) return { ok: false, error: 'invalid_cdk_timestamp' };
+  const promoCode = String(input?.promoCode || '').trim();
+  const promoSource = ['registered', 'external', 'none'].includes(input?.promoSource)
+    ? input.promoSource
+    : 'none';
+  const encryptedPromoCode = promoCode
+    ? await encryptValue(promoCode, env.PROMO_ENCRYPTION_KEY, `cdk-checkout-promo:${id}`)
+    : null;
+  const nowIso = now.toISOString();
+  const externalExpiresAt = new Date(now.getTime() + EXTERNAL_PROMO_CDK_LIFETIME_MS).toISOString();
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE cdks
+       SET use_count = use_count + 1,
+           external_use_count = external_use_count + 1,
+           external_mode_at = COALESCE(external_mode_at, ?1),
+           expires_at = CASE
+             WHEN external_mode_at IS NULL THEN MIN(expires_at, ?2)
+             ELSE expires_at
+           END,
+           last_used_at = ?1
+       WHERE id = ?3
+         AND kind = 'standard'
+         AND max_uses = 2147483647
+         AND activated_at IS NOT NULL
+         AND deleted_at IS NULL
+         AND revoked_at IS NULL
+         AND expires_at > ?1
+         AND external_use_count < 3`
+    ).bind(nowIso, externalExpiresAt, id),
+    env.DB.prepare(
+      `INSERT INTO cdk_checkout_audits
+       (cdk_id, encrypted_promo_code, promo_code_suffix, promo_source, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5
+       WHERE changes() = 1
+         AND EXISTS (
+         SELECT 1 FROM cdks
+         WHERE id = ?1 AND last_used_at = ?5 AND external_mode_at IS NOT NULL
+       )`
+    ).bind(id, encryptedPromoCode, promoCode.slice(-6), promoSource, nowIso),
+  ]);
+  if (Number(results[0]?.meta?.changes || 0) !== 1) {
+    const latest = await env.DB.prepare(
+      `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
+       WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
+    ).bind(id).first();
+    return resultFromRecord(latest, new Date());
+  }
+
+  const latest = await env.DB.prepare(
+    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
+     WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
+  ).bind(id).first();
+  const record = publicRecord(latest, now);
+  return {
+    ok: true,
+    id: record.id,
+    label: record.label,
+    kind: record.kind,
+    unlimited: record.unlimited,
+    repeatable: record.repeatable,
+    maxUses: record.maxUses,
+    useCount: record.useCount,
+    remainingUses: record.remainingUses,
+    activatedAt: record.activatedAt,
+    expiresAt: record.expiresAt,
+    sessionActive: record.state === 'active',
+  };
+}
+
 export async function createCdks(input, env) {
   if (!visualEncryptionReady(env)) return unavailableResult();
   const count = parsePositiveInteger(input?.count, 1, MAX_BATCH_SIZE);
@@ -384,7 +474,8 @@ export async function listCdks(env, limitValue = 200) {
   await synchronizeCustomerCdkExpiry(env);
   const result = await env.DB.prepare(
     `SELECT c.id, c.code_suffix, c.encrypted_code, c.label, c.kind, c.max_uses, c.use_count, c.created_at,
-            c.activated_at, c.expires_at, c.revoked_at, c.deleted_at, c.last_used_at, p.code_suffix AS promo_suffix,
+            c.activated_at, c.expires_at, c.revoked_at, c.deleted_at, c.last_used_at,
+            c.external_mode_at, c.external_use_count, p.code_suffix AS promo_suffix,
             p.encrypted_code AS promo_encrypted_code, p.country AS promo_scope,
             p.auto_delete_at AS promo_auto_delete_at, p.deleted_at AS promo_deleted_at
      FROM cdks c
@@ -393,8 +484,41 @@ export async function listCdks(env, limitValue = 200) {
      WHERE c.deleted_at IS NULL
      ORDER BY c.id DESC LIMIT ?1`
   ).bind(limit).all();
+  const auditResult = await env.DB.prepare(
+    `SELECT h.id, h.cdk_id, h.encrypted_promo_code, h.promo_code_suffix,
+            h.promo_source, h.created_at
+     FROM cdk_checkout_audits h
+     JOIN (
+       SELECT id FROM cdks WHERE deleted_at IS NULL ORDER BY id DESC LIMIT ?1
+     ) recent ON recent.id = h.cdk_id
+     ORDER BY h.id DESC`
+  ).bind(limit).all();
+  const auditsByCdk = new Map();
+  for (const audit of auditResult?.results || []) {
+    let promoCode = '';
+    if (audit.encrypted_promo_code) {
+      try {
+        promoCode = await decryptValue(
+          audit.encrypted_promo_code,
+          env.PROMO_ENCRYPTION_KEY,
+          `cdk-checkout-promo:${audit.cdk_id}`
+        );
+      } catch {
+        promoCode = audit.promo_code_suffix ? `••••••${audit.promo_code_suffix}` : '';
+      }
+    }
+    const records = auditsByCdk.get(Number(audit.cdk_id)) || [];
+    records.push({
+      id: Number(audit.id),
+      promoCode,
+      promoSource: audit.promo_source,
+      createdAt: audit.created_at,
+    });
+    auditsByCdk.set(Number(audit.cdk_id), records);
+  }
   const now = new Date();
   const records = await Promise.all((result?.results || []).map(async (row) => {
+    row.checkout_audits = auditsByCdk.get(Number(row.id)) || [];
     let revealedCode = '';
     if (row.encrypted_code) {
       try {

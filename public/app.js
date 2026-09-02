@@ -567,16 +567,7 @@ function updateCdkChip(details) {
     elements.cdkRemaining.textContent = '管理员通用 · 长期有效';
     return;
   }
-  const repeatable = details.repeatable ?? details.cdkRepeatable;
-  const expiresAt = details.expiresAt || details.cdkExpiresAt;
-  const useCount = details.useCount ?? details.cdkUseCount;
-  const expiry = formatExpiry(expiresAt);
-  if (repeatable) {
-    elements.cdkRemaining.textContent = `${expiry ? `有效至 ${expiry} · ` : ''}可重复提链${useCount ? ` · 已成功 ${useCount} 次` : ''}`;
-    return;
-  }
-  const remainingUses = details.remainingUses ?? details.cdkRemainingUses;
-  elements.cdkRemaining.textContent = `剩余 ${remainingUses} 次${expiry ? ` · 有效至 ${expiry}` : ''}`;
+  elements.cdkRemaining.textContent = '授权有效 · 可继续使用';
 }
 
 function clearCdkExpiryTimer() {

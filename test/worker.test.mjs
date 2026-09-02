@@ -72,6 +72,19 @@ class MemoryStatement {
   }
 
   async all() {
+    if (this.query.includes('FROM cdk_checkout_audits h')) {
+      const limit = Number(this.values[0]) || 200;
+      const recentIds = new Set(this.database.rows
+        .filter((row) => !row.deleted_at)
+        .sort((left, right) => right.id - left.id)
+        .slice(0, limit)
+        .map((row) => row.id));
+      return {
+        results: [...this.database.auditRows]
+          .filter((row) => recentIds.has(row.cdk_id))
+          .sort((left, right) => right.id - left.id),
+      };
+    }
     if (this.query.includes('FROM promo_codes p') && this.query.includes('ORDER BY p.id DESC')) {
       const limit = Number(this.values[0]) || 20;
       const offset = Number(this.values[1]) || 0;
@@ -118,6 +131,7 @@ class MemoryStatement {
           !row.activated_at ||
           row.deleted_at ||
           row.revoked_at ||
+          row.external_mode_at ||
           (targetId && row.id !== targetId)
         ) return;
         const assignment = this.database.assignmentRows.find((item) => item.cdk_id === row.id);
@@ -183,14 +197,49 @@ class MemoryStatement {
       return { meta: { changes: 1 } };
     }
 
-    if (this.query.startsWith('UPDATE cdks SET expires_at = ( SELECT p.auto_delete_at')) {
+    if (this.query.startsWith('UPDATE cdks SET expires_at = CASE')) {
       const [promoId] = this.values;
       const promo = this.database.promoRows.find((row) => row.id === Number(promoId));
       const assignment = this.database.assignmentRows.find((row) => row.promo_code_id === Number(promoId));
       const cdk = assignment && this.database.rows.find((row) => row.id === assignment.cdk_id && row.kind === 'standard' && row.activated_at && !row.deleted_at && !row.revoked_at);
       if (!promo?.auto_delete_at || !cdk) return { meta: { changes: 0 } };
-      cdk.expires_at = promo.auto_delete_at;
+      cdk.expires_at = cdk.external_mode_at && cdk.expires_at < promo.auto_delete_at
+        ? cdk.expires_at
+        : promo.auto_delete_at;
       return { meta: { changes: 1 } };
+    }
+
+    if (this.query.startsWith('UPDATE cdks SET use_count = use_count + 1, external_use_count')) {
+      const [now, externalExpiresAt, id] = this.values;
+      const row = this.database.rows.find((item) => item.id === Number(id));
+      const active = row && row.kind === 'standard' && row.max_uses === 2_147_483_647 &&
+        row.activated_at && !row.deleted_at && !row.revoked_at && row.expires_at > now &&
+        Number(row.external_use_count || 0) < 3;
+      if (!active) return { meta: { changes: 0 } };
+      row.use_count += 1;
+      row.external_use_count = Number(row.external_use_count || 0) + 1;
+      if (!row.external_mode_at) {
+        row.external_mode_at = now;
+        if (externalExpiresAt < row.expires_at) row.expires_at = externalExpiresAt;
+      }
+      row.last_used_at = now;
+      return { meta: { changes: 1 } };
+    }
+
+    if (this.query.startsWith('INSERT INTO cdk_checkout_audits')) {
+      const [cdkId, encryptedPromoCode, promoCodeSuffix, promoSource, createdAt] = this.values;
+      const cdk = this.database.rows.find((row) => row.id === Number(cdkId));
+      if (!cdk || cdk.last_used_at !== createdAt || !cdk.external_mode_at) return { meta: { changes: 0 } };
+      const id = this.database.nextAuditId++;
+      this.database.auditRows.push({
+        id,
+        cdk_id: Number(cdkId),
+        encrypted_promo_code: encryptedPromoCode,
+        promo_code_suffix: promoCodeSuffix,
+        promo_source: promoSource,
+        created_at: createdAt,
+      });
+      return { meta: { changes: 1, last_row_id: id } };
     }
 
     if (this.query.startsWith('UPDATE promo_codes SET deleted_at') && this.query.includes('auto_delete_at = NULL')) {
@@ -272,6 +321,8 @@ class MemoryStatement {
         revoked_at: null,
         deleted_at: null,
         last_used_at: null,
+        external_mode_at: null,
+        external_use_count: 0,
       });
       return { meta: { changes: 1, last_row_id: id } };
     }
@@ -338,8 +389,10 @@ class MemoryD1 {
     this.proxyRows = [];
     this.promoRows = [];
     this.assignmentRows = [];
+    this.auditRows = [];
     this.nextId = 1;
     this.nextPromoId = 1;
+    this.nextAuditId = 1;
   }
 
   prepare(query) {
@@ -1120,19 +1173,22 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
   }
 });
 
-test('checkout rejects an unregistered promo before calling the upstream service', async () => {
+test('customer CDK using an external promo is limited to three successful checkouts in three hours and audited for admin', async () => {
   const env = createEnv();
   const issued = await issueCdk(env);
   const originalFetch = globalThis.fetch;
   let checkoutCalls = 0;
   globalThis.fetch = async () => {
     checkoutCalls += 1;
-    return new Response('{}', { status: 500 });
+    return new Response(JSON.stringify({ checkout_session_id: `oaics_external_${checkoutCalls}` }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
   };
   try {
-    const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+    const request = () => worker.fetch(new Request('https://checkout.example/api/checkout/team', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.31' },
       body: JSON.stringify({
         cdk: issued.code,
         accessToken: 'eyJ' + 'x'.repeat(80),
@@ -1141,10 +1197,66 @@ test('checkout rejects an unregistered promo before calling the upstream service
         seatQuantity: 2,
       }),
     }), env);
-    assert.equal(response.status, 403);
-    assert.equal((await response.json()).error, 'promo_not_registered');
-    assert.equal(checkoutCalls, 0);
+
+    const firstResponse = await request();
+    const first = await firstResponse.json();
+    assert.equal(firstResponse.status, 200);
+    assert.equal(first.cdkUseCount, 1);
+    assert.equal('externalMode' in first, false);
+    assert.equal('externalUseCount' in first, false);
+    assert.equal('checkoutAudits' in first, false);
+    assert.equal(new Date(env.DB.rows[0].expires_at) - new Date(env.DB.rows[0].external_mode_at), 3 * 60 * 60 * 1_000);
+
+    assert.equal((await request()).status, 200);
+    const thirdResponse = await request();
+    assert.equal(thirdResponse.status, 200);
+    assert.match(thirdResponse.headers.get('set-cookie') || '', /Max-Age=0/);
+    assert.equal(env.DB.rows[0].external_use_count, 3);
+    assert.equal(env.DB.rows[0].use_count, 3);
+    assert.equal(env.DB.auditRows.length, 3);
+    assert.equal(env.DB.auditRows.every((row) => row.promo_source === 'external'), true);
+    assert.equal(env.DB.auditRows.some((row) => row.encrypted_promo_code.includes('EXTERNALPROMO9999')), false);
+
+    const fourthResponse = await request();
+    assert.equal(fourthResponse.status, 403);
+    assert.equal((await fourthResponse.json()).error, 'cdk_exhausted');
+    assert.equal(checkoutCalls, 3);
+
+    const listResponse = await adminRequest(env, '/api/admin/cdks?limit=20');
+    const list = await listResponse.json();
+    assert.equal(listResponse.status, 200);
+    assert.equal(list.records[0].externalMode, true);
+    assert.equal(list.records[0].externalUseCount, 3);
+    assert.equal(list.records[0].externalUseLimit, 3);
+    assert.equal(list.records[0].checkoutAudits.length, 3);
+    assert.equal(list.records[0].checkoutAudits.every((audit) => audit.promoCode === 'EXTERNALPROMO9999'), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('failed upstream checkout with an external promo does not start its restricted window or consume a use', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('{}', { status: 500 });
+  try {
+    const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.32' },
+      body: JSON.stringify({
+        cdk: issued.code,
+        accessToken: 'eyJ' + 'f'.repeat(80),
+        country: 'US',
+        promoCode: 'EXTERNALFAILED9999',
+        seatQuantity: 2,
+      }),
+    }), env);
+    assert.equal(response.status, 502);
+    assert.equal(env.DB.rows[0].external_mode_at, null);
+    assert.equal(env.DB.rows[0].external_use_count, 0);
     assert.equal(env.DB.rows[0].use_count, 0);
+    assert.equal(env.DB.auditRows.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }
