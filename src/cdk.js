@@ -8,7 +8,8 @@ const MAX_BATCH_SIZE = 50;
 const STANDARD_CDK_ACTIVATION_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const STANDARD_CDK_ACTIVE_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const EXTERNAL_PROMO_CDK_LIFETIME_MS = 3 * 60 * 60 * 1_000;
-const EXTERNAL_PROMO_CDK_MAX_USES = 3;
+const EXTERNAL_PROMO_CDK_DEFAULT_USES = 3;
+const MAX_CDK_RECHARGE_USES = 100;
 // 兼容初始表的 CHECK (max_uses > 0)；对外仍以 repeatable=true / maxUses=null 表示不限次数。
 const STANDARD_CDK_REPEATABLE_SENTINEL = 2_147_483_647;
 const CDK_KIND_STANDARD = 'standard';
@@ -57,12 +58,19 @@ function rowKind(row) {
   return row?.kind === CDK_KIND_ADMIN ? CDK_KIND_ADMIN : CDK_KIND_STANDARD;
 }
 
+function rowExternalUseLimit(row) {
+  const limit = Number(row?.external_use_limit);
+  return Number.isInteger(limit) && limit >= EXTERNAL_PROMO_CDK_DEFAULT_USES
+    ? limit
+    : EXTERNAL_PROMO_CDK_DEFAULT_USES;
+}
+
 function recordState(row, now = new Date()) {
   if (row.revoked_at) return 'revoked';
   if (rowKind(row) === CDK_KIND_ADMIN) return 'active';
   if (row.expires_at && new Date(row.expires_at) <= now) return 'expired';
   if (!row.activated_at) return 'pending';
-  if (Number(row.external_use_count || 0) >= EXTERNAL_PROMO_CDK_MAX_USES) return 'exhausted';
+  if (Number(row.external_use_count || 0) >= rowExternalUseLimit(row)) return 'exhausted';
   if (Number(row.max_uses) > 0 && Number(row.use_count) >= Number(row.max_uses)) return 'exhausted';
   return 'active';
 }
@@ -78,6 +86,7 @@ function publicRecord(row, now = new Date(), revealedCode = '', revealedPromo = 
   const promoLocked = promoSold || promoDeleted;
   const externalMode = kind === CDK_KIND_STANDARD && Boolean(row.external_mode_at);
   const externalUseCount = Number(row.external_use_count || 0);
+  const externalUseLimit = rowExternalUseLimit(row);
   return {
     id: Number(row.id),
     maskedCode: '••••-••••-••••-' + row.code_suffix,
@@ -90,7 +99,7 @@ function publicRecord(row, now = new Date(), revealedCode = '', revealedPromo = 
     externalMode,
     externalModeAt: externalMode ? row.external_mode_at : '',
     externalUseCount,
-    externalUseLimit: externalMode ? EXTERNAL_PROMO_CDK_MAX_USES : null,
+    externalUseLimit: externalMode ? externalUseLimit : null,
     maxUses: unlimited || repeatable ? null : maxUses,
     useCount,
     remainingUses: unlimited || repeatable ? null : Math.max(0, maxUses - useCount),
@@ -141,7 +150,7 @@ function resultFromRecord(row, now = new Date()) {
 
 const CDK_SELECT_COLUMNS = `id, code_suffix, label, kind, max_uses, use_count,
   created_at, activated_at, expires_at, revoked_at, deleted_at, last_used_at,
-  external_mode_at, external_use_count`;
+  external_mode_at, external_use_count, external_use_limit`;
 
 export async function synchronizeCustomerCdkExpiry(env, idValue = null) {
   if (!env?.DB) return unavailableResult();
@@ -323,7 +332,7 @@ export async function recordRestrictedCheckoutSuccess(input, env, nowValue = new
          AND deleted_at IS NULL
          AND revoked_at IS NULL
          AND expires_at > ?1
-         AND external_use_count < 3`
+         AND external_use_count < external_use_limit`
     ).bind(nowIso, externalExpiresAt, id),
     env.DB.prepare(
       `INSERT INTO cdk_checkout_audits
@@ -365,6 +374,55 @@ export async function recordRestrictedCheckoutSuccess(input, env, nowValue = new
     activatedAt: record.activatedAt,
     expiresAt: record.expiresAt,
     sessionActive: record.state === 'active',
+  };
+}
+
+export async function rechargeCdkUses(idValue, quantityValue, env, nowValue = new Date()) {
+  if (!databaseReady(env)) return unavailableResult();
+  const id = Number(idValue);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'invalid_cdk_id' };
+  const quantity = parsePositiveInteger(quantityValue, EXTERNAL_PROMO_CDK_DEFAULT_USES, MAX_CDK_RECHARGE_USES);
+  if (quantity == null) {
+    return { ok: false, error: 'invalid_cdk_recharge_quantity', max: MAX_CDK_RECHARGE_USES };
+  }
+  const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  if (Number.isNaN(now.getTime())) return { ok: false, error: 'invalid_cdk_timestamp' };
+  const result = await env.DB.prepare(
+    `UPDATE cdks
+     SET external_use_limit = external_use_limit + ?1
+     WHERE id = ?2
+       AND kind = 'standard'
+       AND external_mode_at IS NOT NULL
+       AND deleted_at IS NULL
+       AND revoked_at IS NULL
+       AND expires_at > ?3
+       AND external_use_limit <= 2147483647 - ?1`
+  ).bind(quantity, id, now.toISOString()).run();
+  if (Number(result?.meta?.changes || 0) !== 1) {
+    const row = await env.DB.prepare(
+      `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
+       WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
+    ).bind(id).first();
+    if (!row) return { ok: false, error: 'cdk_not_found' };
+    const state = recordState(row, now);
+    if (state === 'expired') return { ok: false, error: 'cdk_expired' };
+    if (state === 'revoked') return { ok: false, error: 'cdk_revoked' };
+    return { ok: false, error: 'cdk_not_rechargeable' };
+  }
+  const row = await env.DB.prepare(
+    `SELECT ${CDK_SELECT_COLUMNS} FROM cdks
+     WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
+  ).bind(id).first();
+  const record = publicRecord(row, now);
+  return {
+    ok: true,
+    id: record.id,
+    addedUses: quantity,
+    externalUseCount: record.externalUseCount,
+    externalUseLimit: record.externalUseLimit,
+    remainingExternalUses: Math.max(0, record.externalUseLimit - record.externalUseCount),
+    state: record.state,
+    expiresAt: record.expiresAt,
   };
 }
 
@@ -478,7 +536,8 @@ export async function listCdks(env, limitValue = 200) {
   const result = await env.DB.prepare(
     `SELECT c.id, c.code_suffix, c.encrypted_code, c.label, c.kind, c.max_uses, c.use_count, c.created_at,
             c.activated_at, c.expires_at, c.revoked_at, c.deleted_at, c.last_used_at,
-            c.external_mode_at, c.external_use_count, p.code_suffix AS promo_suffix,
+            c.external_mode_at, c.external_use_count, c.external_use_limit,
+            p.code_suffix AS promo_suffix,
             p.encrypted_code AS promo_encrypted_code, p.country AS promo_scope,
             p.auto_delete_at AS promo_auto_delete_at, p.deleted_at AS promo_deleted_at
      FROM cdks c

@@ -242,6 +242,7 @@ td code { color: #24322d; font: 8px ui-monospace, SFMono-Regular, Consolas, mono
 .table-action:disabled { cursor: not-allowed; opacity: .45; }
 .table-actions { display: flex; align-items: center; gap: 6px; }
 .table-action-neutral { color: #53605b; background: #eef2f0; }
+.table-action-credit { color: #116149; background: #e4f5ee; }
 .table-action-danger { color: #a42424; background: #ffe8e8; }
 .filter-pills { display: flex; gap: 4px; padding: 3px; border-radius: 9px; background: #f0f3f2; }
 .filter-pills button { min-height: 26px; padding: 0 9px; border: 0; border-radius: 7px; color: #74807b; background: transparent; cursor: pointer; font-size: 7px; }

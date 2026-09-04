@@ -39,7 +39,7 @@ test('admin navigation survives refresh through the current URL hash', () => {
 
 test('admin describes the synchronized 24-hour customer lifecycle', () => {
   assert.match(adminHtml, /分配优惠码 24 小时/);
-  assert.match(adminHtml, /客户自有码 3 小时 \/ 3 次/);
+  assert.match(adminHtml, /客户自有码默认 3 小时 \/ 3 次/);
   assert.match(adminHtml, /自动释放原分配码/);
 });
 
@@ -50,4 +50,11 @@ test('admin exposes customer checkout auditing without adding it to the customer
   assert.match(adminStyles, /\.checkout-audit-list/);
   assert.doesNotMatch(customerScript, /已成功.*useCount/);
   assert.match(customerScript, /授权有效 · 可继续使用/);
+});
+
+test('admin can recharge customer-only CDK usage without exposing the control to customers', () => {
+  assert.match(adminScript, /充值次数/);
+  assert.match(adminScript, /\/api\/admin\/cdks\/\$\{record\.id\}\/recharge/);
+  assert.match(adminStyles, /\.table-action-credit/);
+  assert.doesNotMatch(customerScript, /\/recharge/);
 });

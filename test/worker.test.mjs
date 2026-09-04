@@ -6,6 +6,7 @@ import worker from '../src/worker.js';
 
 const cdkExpiryMigration = await readFile(new URL('../migrations/0007_align_customer_cdk_expiry.sql', import.meta.url), 'utf8');
 const externalPromoReleaseMigration = await readFile(new URL('../migrations/0009_release_external_cdk_promos.sql', import.meta.url), 'utf8');
+const externalUseLimitMigration = await readFile(new URL('../migrations/0010_add_external_use_limit.sql', import.meta.url), 'utf8');
 
 class MemoryStatement {
   constructor(database, query) {
@@ -230,7 +231,7 @@ class MemoryStatement {
       const row = this.database.rows.find((item) => item.id === Number(id));
       const active = row && row.kind === 'standard' && row.activated_at &&
         !row.deleted_at && !row.revoked_at && row.expires_at > now &&
-        Number(row.external_use_count || 0) < 3;
+        Number(row.external_use_count || 0) < Number(row.external_use_limit || 3);
       if (!active) return { meta: { changes: 0 } };
       row.max_uses = 2_147_483_647;
       row.use_count += 1;
@@ -240,6 +241,17 @@ class MemoryStatement {
         if (externalExpiresAt < row.expires_at) row.expires_at = externalExpiresAt;
       }
       row.last_used_at = now;
+      return { meta: { changes: 1 } };
+    }
+
+    if (this.query.startsWith('UPDATE cdks SET external_use_limit = external_use_limit + ?1')) {
+      const [quantity, id, now] = this.values;
+      const row = this.database.rows.find((item) => item.id === Number(id));
+      const rechargeable = row && row.kind === 'standard' && row.external_mode_at &&
+        !row.deleted_at && !row.revoked_at && row.expires_at > now &&
+        Number(row.external_use_limit || 3) <= 2_147_483_647 - Number(quantity);
+      if (!rechargeable) return { meta: { changes: 0 } };
+      row.external_use_limit = Number(row.external_use_limit || 3) + Number(quantity);
       return { meta: { changes: 1 } };
     }
 
@@ -340,6 +352,7 @@ class MemoryStatement {
         last_used_at: null,
         external_mode_at: null,
         external_use_count: 0,
+        external_use_limit: 3,
       });
       return { meta: { changes: 1, last_row_id: id } };
     }
@@ -449,6 +462,11 @@ test('CDK expiry migration aligns existing customer records to 24 hours or promo
 test('external promo release migration also frees assignments held by existing restricted CDKs', () => {
   assert.match(externalPromoReleaseMigration, /DELETE FROM cdk_promo_assignments/);
   assert.match(externalPromoReleaseMigration, /external_mode_at IS NOT NULL/);
+});
+
+test('external use limit migration gives existing CDKs the default three-use allowance', () => {
+  assert.match(externalUseLimitMigration, /external_use_limit INTEGER NOT NULL DEFAULT 3/);
+  assert.match(externalUseLimitMigration, /CHECK \(external_use_limit >= 3\)/);
 });
 
 async function adminRequest(env, path, options = {}) {
@@ -1383,6 +1401,90 @@ test('a legacy one-use customer CDK upgrades to the three-use rule when it switc
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('admin can recharge an exhausted customer-only CDK and preserve its original expiry', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const originalFetch = globalThis.fetch;
+  let checkoutCalls = 0;
+  globalThis.fetch = async () => {
+    checkoutCalls += 1;
+    return new Response(JSON.stringify({ checkout_session_id: `oaics_recharge_${checkoutCalls}` }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const checkout = () => worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.35' },
+    body: JSON.stringify({
+      cdk: issued.code,
+      accessToken: 'eyJ' + 'h'.repeat(80),
+      country: 'US',
+      promoCode: 'RECHARGECUSTOMERPROMO99',
+      seatQuantity: 2,
+    }),
+  }), env);
+  try {
+    assert.equal((await checkout()).status, 200);
+    const originalExpiry = env.DB.rows[0].expires_at;
+    assert.equal((await checkout()).status, 200);
+    assert.equal((await checkout()).status, 200);
+    assert.equal(env.DB.rows[0].external_use_count, 3);
+    assert.equal(env.DB.rows[0].external_use_limit, 3);
+
+    const rechargeResponse = await adminRequest(env, `/api/admin/cdks/${issued.id}/recharge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quantity: 2 }),
+    });
+    const recharge = await rechargeResponse.json();
+    assert.equal(rechargeResponse.status, 200);
+    assert.equal(recharge.addedUses, 2);
+    assert.equal(recharge.externalUseCount, 3);
+    assert.equal(recharge.externalUseLimit, 5);
+    assert.equal(recharge.remainingExternalUses, 2);
+    assert.equal(recharge.state, 'active');
+    assert.equal(recharge.expiresAt, originalExpiry);
+    assert.equal(env.DB.rows[0].expires_at, originalExpiry);
+
+    assert.equal((await checkout()).status, 200);
+    assert.equal((await checkout()).status, 200);
+    const exhausted = await checkout();
+    assert.equal(exhausted.status, 403);
+    assert.equal((await exhausted.json()).error, 'cdk_exhausted');
+    assert.equal(checkoutCalls, 5);
+
+    const listResponse = await adminRequest(env, '/api/admin/cdks?limit=20');
+    const list = await listResponse.json();
+    assert.equal(list.records[0].externalUseCount, 5);
+    assert.equal(list.records[0].externalUseLimit, 5);
+    assert.equal(list.records[0].state, 'exhausted');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('recharge rejects invalid quantities and CDKs that are not in customer-only mode', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const invalidQuantity = await adminRequest(env, `/api/admin/cdks/${issued.id}/recharge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quantity: 101 }),
+  });
+  assert.equal(invalidQuantity.status, 400);
+  assert.equal((await invalidQuantity.json()).error, 'invalid_cdk_recharge_quantity');
+
+  const wrongMode = await adminRequest(env, `/api/admin/cdks/${issued.id}/recharge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quantity: 3 }),
+  });
+  assert.equal(wrongMode.status, 409);
+  assert.equal((await wrongMode.json()).error, 'cdk_not_rechargeable');
+  assert.equal(env.DB.rows[0].external_use_limit, 3);
 });
 
 test('legacy one-use CDKs keep their original exhaustion rule after migration', async () => {

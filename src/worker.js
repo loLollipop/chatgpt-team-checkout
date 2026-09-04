@@ -3,6 +3,7 @@ import {
   createCdks,
   deleteCdk,
   listCdks,
+  rechargeCdkUses,
   recordRestrictedCheckoutSuccess,
   revokeCdk,
   synchronizeCustomerCdkExpiry,
@@ -820,7 +821,26 @@ async function handleAdminCdkItem(request, env, id, action = '') {
   if (!authorization.ok) {
     return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
   }
-  if (request.method !== 'DELETE') {
+  if (action === 'recharge') {
+    if (request.method !== 'POST') {
+      return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
+    }
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
+    }
+    const result = await safeCdkOperation(() => rechargeCdkUses(id, body.quantity, env));
+    if (!result.ok) {
+      const status = ['cdk_service_not_configured', 'cdk_database_error'].includes(result.error)
+        ? 503
+        : (result.error === 'cdk_not_found' ? 404 : (result.error === 'invalid_cdk_recharge_quantity' ? 400 : 409));
+      return jsonResponse(result, status, { 'Cache-Control': 'no-store' }, env);
+    }
+    return jsonResponse(result, 200, { 'Cache-Control': 'no-store' }, env);
+  }
+  if (request.method !== 'DELETE' || !['', 'delete'].includes(action)) {
     return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
   }
   const result = await safeCdkOperation(() => action === 'delete' ? deleteCdk(id, env) : revokeCdk(id, env));
@@ -1420,7 +1440,7 @@ export default {
     if (url.pathname === '/api/admin/cdks/universal') {
       return handleAdminUniversalCdk(request, env);
     }
-    const adminCdkMatch = /^\/api\/admin\/cdks\/(\d+)(?:\/(delete))?$/.exec(url.pathname);
+    const adminCdkMatch = /^\/api\/admin\/cdks\/(\d+)(?:\/(delete|recharge))?$/.exec(url.pathname);
     if (adminCdkMatch) return handleAdminCdkItem(request, env, adminCdkMatch[1], adminCdkMatch[2] || '');
     if (url.pathname === '/api/admin/promos' && ['GET', 'POST'].includes(request.method)) {
       return handleAdminPromos(request, env);

@@ -24,7 +24,7 @@ const VIEW_META = {
 const ERROR_MESSAGES = {
   admin_unauthorized: '管理员密码错误，请重新输入。', admin_not_configured: '后台密码尚未配置。', cdk_service_not_configured: 'CDK 服务尚未配置。', cdk_database_error: 'CDK 数据库操作失败。',
   promo_service_not_configured: '优惠码加密服务尚未配置。', promo_database_error: '优惠码数据库操作失败。', invalid_promo_import: '导入内容无效或数量超过限制。', no_valid_promo_codes: '没有识别到有效的优惠码或 chatgpt.com/p 链接。', promo_inventory_insufficient: '优惠码库存不足，请先导入后再生成 CDK。', promo_not_found: '优惠码不存在或已删除。',
-  invalid_cdk_count: 'CDK 生成数量必须为 1–50。', cdk_not_found_or_revoked: 'CDK 不存在或已停用。', cdk_not_found: 'CDK 不存在或已删除。',
+  invalid_cdk_count: 'CDK 生成数量必须为 1–50。', invalid_cdk_recharge_quantity: '单次充值次数必须为 1–100。', cdk_not_rechargeable: '只能给尚未过期的“仅 CDK 模式”客户充值。', cdk_expired: '该 CDK 已过期，无法充值次数。', cdk_revoked: '该 CDK 已停用，无法充值次数。', cdk_not_found_or_revoked: 'CDK 不存在或已停用。', cdk_not_found: 'CDK 不存在或已删除。',
   proxy_service_not_configured: '代理加密服务尚未配置。', proxy_database_error: '代理数据库操作失败。', invalid_proxy_import: '代理导入格式无效。', invalid_proxy_url: '代理 URL 格式不正确。', unsupported_proxy_protocol: '仅支持 HTTP / HTTPS 代理。', unsupported_country: '国家代码不受支持。', proxy_not_found: '该国家没有已导入的代理。', relay_not_configured: 'Relay 尚未配置。', relay_probe_unreachable: 'Relay 无法连接。', relay_probe_timeout: '代理测试超时。', proxy_test_failed: '代理测试失败。',
 };
 const STATE_LABELS = { pending: '待激活', active: '有效', exhausted: '已耗尽', expired: '已过期', revoked: '已停用', available: '可用', assigned: '已分配', sold: '已使用', healthy: '健康', failed: '异常', untested: '未测试' };
@@ -219,7 +219,11 @@ function renderCdks() {
       : (record.state === 'pending' ? `激活截止 ${formatDate(record.activationDeadline || record.expiresAt)}` : `${record.externalMode ? '仅 CDK 模式 · ' : ''}有效至 ${formatDate(record.expiresAt)}`);
     const actions = node('div', 'table-actions');
     const revoke = node('button', 'table-action table-action-neutral', record.state === 'revoked' ? '已停用' : '停用'); revoke.type = 'button'; revoke.disabled = record.state === 'revoked'; revoke.addEventListener('click', () => revokeCdk(record));
-    const remove = node('button', 'table-action table-action-danger', '删除'); remove.type = 'button'; remove.addEventListener('click', () => deleteCdk(record)); actions.append(revoke, remove);
+    const remove = node('button', 'table-action table-action-danger', '删除'); remove.type = 'button'; remove.addEventListener('click', () => deleteCdk(record));
+    if (record.externalMode && ['active', 'exhausted'].includes(record.state)) {
+      const recharge = node('button', 'table-action table-action-credit', '充值次数'); recharge.type = 'button'; recharge.addEventListener('click', () => rechargeCdk(record, recharge)); actions.append(recharge);
+    }
+    actions.append(revoke, remove);
     row.append(tableCell(code), tableCell(type), tableCell(record.label || '—'), tableCell(promo), tableCell(progress), tableCell(auditView), tableCell(lifecycle), tableCell(stateBadge(record.state)), tableCell(actions)); elements.cdkTableBody.append(row);
   });
 }
@@ -338,6 +342,19 @@ elements.cdkPrevPage.addEventListener('click', () => { state.cdkPage = Math.max(
 elements.cdkNextPage.addEventListener('click', () => { state.cdkPage += 1; renderCdks(); });
 async function revokeCdk(record) { if (!confirm(`确定停用 ${record.code || record.maskedCode} 吗？此操作不会回收已分配的优惠码。`)) return; try { await adminFetch(`/api/admin/cdks/${record.id}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, 'CDK 已停用。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 async function deleteCdk(record) { if (!confirm(`确定删除 ${record.code || record.maskedCode} 吗？删除后会立即失效并从后台列表消失，已分配优惠码不会回收。`)) return; try { await adminFetch(`/api/admin/cdks/${record.id}/delete`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, 'CDK 已删除。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
+async function rechargeCdk(record, button) {
+  const value = prompt(`给 ${record.code || record.maskedCode} 充值多少次？\n当前进度：${record.externalUseCount}/${record.externalUseLimit}\n充值不会延长 3 小时有效期。`, '3');
+  if (value === null) return;
+  const quantity = Number(String(value).trim());
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 100) { setStatus(elements.globalStatus, ERROR_MESSAGES.invalid_cdk_recharge_quantity, 'error'); return; }
+  setButtonLoading(button, true, '充值中…', '充值次数');
+  try {
+    const result = await adminFetch(`/api/admin/cdks/${record.id}/recharge`, { method: 'POST', body: JSON.stringify({ quantity }) });
+    await loadAllData();
+    setStatus(elements.globalStatus, `已充值 ${result.addedUses} 次；当前 ${result.externalUseCount}/${result.externalUseLimit}，剩余 ${result.remainingExternalUses} 次，有效期不变。`, 'success');
+  } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); }
+  finally { if (document.body.contains(button)) setButtonLoading(button, false, '充值中…', '充值次数'); }
+}
 
 function splitTextCodes(text) { return String(text || '').split(/[\r\n,;\t]+/).map((value) => value.trim()).filter(Boolean); }
 async function codesFromFile(file) {
