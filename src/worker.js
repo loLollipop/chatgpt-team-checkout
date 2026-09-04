@@ -1201,18 +1201,31 @@ async function handleTeamCheckout(request, env) {
     : await cdkSessionAuthorization(request, env);
   if (!cdkAuthorization.ok) return cdkFailureResponse(cdkAuthorization, env);
 
-  let promoAuthorization = { ok: true, promoId: null, promoCode: '', registered: false };
+  let promoAuthorization = {
+    ok: true,
+    promoId: null,
+    promoCode: '',
+    registered: false,
+    assignedToCdk: false,
+  };
   if (requestedPromo && cdkAuthorization.kind === 'admin') {
     const promoCode = normalizePromoCode(requestedPromo);
     promoAuthorization = promoCode
-      ? { ok: true, promoId: null, promoCode, registered: false }
+      ? { ok: true, promoId: null, promoCode, registered: false, assignedToCdk: false }
       : { ok: false, error: 'invalid_promo_code' };
   } else if (requestedPromo) {
-    promoAuthorization = await safePromoOperation(() => resolvePromoCodeRegistration(requestedPromo, env));
+    promoAuthorization = await safePromoOperation(() => resolvePromoCodeRegistration(
+      requestedPromo,
+      env,
+      cdkAuthorization.id
+    ));
   }
   if (!promoAuthorization.ok) return promoFailureResponse(promoAuthorization, env);
+  const customerPromoMismatch = cdkAuthorization.kind === 'standard' && Boolean(
+    promoAuthorization.promoCode && !promoAuthorization.assignedToCdk
+  );
   const restrictedCustomerUsage = cdkAuthorization.kind === 'standard' && (
-    cdkAuthorization.externalMode || Boolean(promoAuthorization.promoCode && !promoAuthorization.registered)
+    cdkAuthorization.externalMode || customerPromoMismatch
   );
 
   const proxyResolution = await resolveCheckoutProxy(countryCode, env);
@@ -1246,7 +1259,9 @@ async function handleTeamCheckout(request, env) {
     if (result.status >= 200 && result.status < 300) {
       const { url, sessionId } = resolveCheckoutUrl(result.data);
       if (url) {
-        const promoLifecycle = promoAuthorization.promoId
+        const usesAssignedInventoryPromo = cdkAuthorization.kind === 'standard' &&
+          !cdkAuthorization.externalMode && promoAuthorization.assignedToCdk;
+        const promoLifecycle = usesAssignedInventoryPromo
           ? await safePromoOperation(() => markPromoForAutoDelete(promoAuthorization.promoId, env))
           : { ok: true, autoDeleteAt: '' };
         // 优惠码首次售出会把已绑定客户 CDK 的结束时间同步为同一个 24 小时时刻。
@@ -1296,8 +1311,8 @@ async function handleTeamCheckout(request, env) {
             seatDefault,
             seatProlite,
             billingPeriod,
-            promoCleanupScheduled: Boolean(promoAuthorization.promoId && promoLifecycle.ok),
-            promoSold: Boolean(promoAuthorization.promoId && promoLifecycle.ok),
+            promoCleanupScheduled: Boolean(usesAssignedInventoryPromo && promoLifecycle.ok),
+            promoSold: Boolean(usesAssignedInventoryPromo && promoLifecycle.ok),
             promoAutoDeleteAt: promoLifecycle.ok ? (promoLifecycle.autoDeleteAt || '') : '',
             proxyUsed: Boolean(proxyRoute),
             cdkKind: usage.kind,

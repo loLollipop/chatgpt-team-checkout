@@ -38,14 +38,15 @@ test('admin navigation survives refresh through the current URL hash', () => {
 });
 
 test('admin describes the synchronized 24-hour customer lifecycle', () => {
-  assert.match(adminHtml, /后台优惠码 24 小时/);
-  assert.match(adminHtml, /外部优惠码 3 小时 \/ 3 次/);
+  assert.match(adminHtml, /分配优惠码 24 小时/);
+  assert.match(adminHtml, /客户自有码 3 小时 \/ 3 次/);
+  assert.match(adminHtml, /自动释放原分配码/);
 });
 
 test('admin exposes customer checkout auditing without adding it to the customer workbench', () => {
   assert.match(adminHtml, /<th>提链审计<\/th>/);
   assert.match(adminScript, /record\.checkoutAudits/);
-  assert.match(adminScript, /外部码.*record\.externalUseCount/);
+  assert.match(adminScript, /仅 CDK.*record\.externalUseCount/);
   assert.match(adminStyles, /\.checkout-audit-list/);
   assert.doesNotMatch(customerScript, /已成功.*useCount/);
   assert.match(customerScript, /授权有效 · 可继续使用/);

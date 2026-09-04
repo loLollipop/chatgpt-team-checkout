@@ -308,7 +308,8 @@ export async function recordRestrictedCheckoutSuccess(input, env, nowValue = new
   const results = await env.DB.batch([
     env.DB.prepare(
       `UPDATE cdks
-       SET use_count = use_count + 1,
+       SET max_uses = 2147483647,
+           use_count = use_count + 1,
            external_use_count = external_use_count + 1,
            external_mode_at = COALESCE(external_mode_at, ?1),
            expires_at = CASE
@@ -318,7 +319,6 @@ export async function recordRestrictedCheckoutSuccess(input, env, nowValue = new
            last_used_at = ?1
        WHERE id = ?3
          AND kind = 'standard'
-         AND max_uses = 2147483647
          AND activated_at IS NOT NULL
          AND deleted_at IS NULL
          AND revoked_at IS NULL
@@ -335,6 +335,9 @@ export async function recordRestrictedCheckoutSuccess(input, env, nowValue = new
          WHERE id = ?1 AND last_used_at = ?5 AND external_mode_at IS NOT NULL
        )`
     ).bind(id, encryptedPromoCode, promoCode.slice(-6), promoSource, nowIso),
+    env.DB.prepare(
+      `DELETE FROM cdk_promo_assignments WHERE cdk_id = ?1`
+    ).bind(id),
   ]);
   if (Number(results[0]?.meta?.changes || 0) !== 1) {
     const latest = await env.DB.prepare(

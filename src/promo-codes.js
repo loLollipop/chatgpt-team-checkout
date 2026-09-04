@@ -332,20 +332,27 @@ export async function validateRegisteredPromoCode(value, env) {
   return { ok: true, promoId: Number(row.id), promoCode };
 }
 
-export async function resolvePromoCodeRegistration(value, env) {
+export async function resolvePromoCodeRegistration(value, env, cdkIdValue = null) {
   if (!serviceReady(env)) return { ok: false, error: 'promo_service_not_configured' };
   const promoCode = normalizePromoCode(value);
   if (!promoCode) return { ok: false, error: 'invalid_promo_code' };
+  const cdkId = Number(cdkIdValue);
   const codeHash = await hashPromoCode(promoCode, env.PROMO_ENCRYPTION_KEY);
   const row = await env.DB.prepare(
-    `SELECT id FROM promo_codes
-     WHERE code_hash = ?1 AND deleted_at IS NULL LIMIT 1`
-  ).bind(codeHash).first();
+    `SELECT p.id,
+            EXISTS (
+              SELECT 1 FROM cdk_promo_assignments a
+              WHERE a.promo_code_id = p.id AND a.cdk_id = ?2
+            ) AS assigned_to_cdk
+     FROM promo_codes p
+     WHERE p.code_hash = ?1 AND p.deleted_at IS NULL LIMIT 1`
+  ).bind(codeHash, Number.isInteger(cdkId) && cdkId > 0 ? cdkId : 0).first();
   return {
     ok: true,
     promoId: row ? Number(row.id) : null,
     promoCode,
     registered: Boolean(row),
+    assignedToCdk: Boolean(row?.assigned_to_cdk),
   };
 }
 

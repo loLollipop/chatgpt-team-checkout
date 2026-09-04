@@ -79,7 +79,7 @@
                     <label>内部备注<input id="cdk-label" type="text" maxlength="80" placeholder="例如：客户 A / 订单号" /></label>
                     <label>生成数量<input id="cdk-count" type="number" min="1" max="50" value="1" /></label>
                   </div>
-                  <div class="fixed-rule"><span>固定规则</span><div><b>后台优惠码 24 小时 · 外部优惠码 3 小时 / 3 次</b><small>使用外部优惠码后自动切换受限模式并记录成功提链 · 当前全球库存 <strong id="cdk-inventory-hint">—</strong> 条</small></div></div>
+                  <div class="fixed-rule"><span>固定规则</span><div><b>分配优惠码 24 小时 · 客户自有码 3 小时 / 3 次</b><small>自有优惠码首次成功提链后，自动释放原分配码并记录提链 · 当前全球库存 <strong id="cdk-inventory-hint">—</strong> 条</small></div></div>
                   <div class="control-card-actions"><button id="cdk-create-button" class="button button-primary" type="submit">生成并分配优惠码</button><div id="cdk-create-status" class="status" role="status" aria-live="polite"></div></div>
                 </form>
               </section>
@@ -121,7 +121,7 @@
                 <div class="upload-box"><input id="promo-file" type="file" accept=".xlsx,.xls,.csv,.txt" /><span class="upload-icon">⇧</span><div><b>或选择 Excel / CSV / TXT 文件</b><small id="promo-file-label">将读取所有非空单元格</small></div><button id="clear-promo-file" type="button" hidden>移除</button></div>
                 <button id="promo-import-button" class="button button-primary" type="submit">导入优惠码</button><div id="promo-import-status" class="status" role="status" aria-live="polite"></div>
               </form></section>
-              <section class="panel inventory-guide"><div class="panel-heading"><div><span class="eyebrow">Allocation rules</span><h3>优惠码同步规则</h3></div></div><ol><li><span>1</span><div><b>后台库存白名单</b><p>工作台只接受后台登记并绑定的优惠码，外部优惠码会被拒绝。</p></div></li><li><span>2</span><div><b>自动标记已使用</b><p>提链成功后隐藏完整代码，防止管理员再次复制发给其他用户。</p></div></li><li><span>3</span><div><b>客户仍可重复提链</b><p>标记不影响原客户使用；CDK 有效期内可继续换国家提链，直到上游提示优惠码不再符合条件。</p></div></li></ol><div class="format-preview"><span>交付格式</span><pre>自助提链：https://你的站点/&#10;CDK：XXXX-XXXX-XXXX-XXXX&#10;优惠码：E3NW9QBJZXKNM9ZE</pre></div></section>
+              <section class="panel inventory-guide"><div class="panel-heading"><div><span class="eyebrow">Allocation rules</span><h3>优惠码同步规则</h3></div></div><ol><li><span>1</span><div><b>精确绑定校验</b><p>只有当前 CDK 自动分配的优惠码会走 24 小时库存流程。</p></div></li><li><span>2</span><div><b>自动释放原分配码</b><p>客户用不匹配的自有码提链成功后，原分配码立即回到可用库存。</p></div></li><li><span>3</span><div><b>仅 CDK 模式审计</b><p>该 CDK 随后按 3 小时 / 3 次规则使用，成功提链记录仅管理员可见。</p></div></li></ol><div class="format-preview"><span>交付格式</span><pre>自助提链：https://你的站点/&#10;CDK：XXXX-XXXX-XXXX-XXXX&#10;优惠码：E3NW9QBJZXKNM9ZE</pre></div></section>
             </div>
             <section class="panel table-panel">
               <div class="panel-heading table-heading"><div><span class="eyebrow">Global inventory</span><h3>全球优惠码明细</h3><p>按状态分页查看；已使用代码会隐藏，绑定客户在 CDK 有效期内仍可继续提链。</p></div><div class="filter-pills" aria-label="优惠码状态筛选"><button class="active" type="button" data-promo-filter="all">全部</button><button type="button" data-promo-filter="available">可用</button><button type="button" data-promo-filter="assigned">已分配</button><button type="button" data-promo-filter="sold">已使用</button></div></div>

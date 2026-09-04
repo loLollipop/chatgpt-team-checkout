@@ -197,7 +197,7 @@ function renderCdks() {
   records.forEach((record) => {
     const row = node('tr'); const code = visibleCode(record.code || record.maskedCode, Boolean(record.legacyCode)); const promoLocked = Boolean(record.promoLocked || String(record.promoCode || '').includes('•')); const promo = visibleCode(record.promoCode || '', promoLocked, record.promoSold ? '已使用 · 禁止再次发放' : (record.promoDeleted ? '已删除' : '无法解密')); const type = node('span', `cdk-kind cdk-kind-${record.kind}`, record.kind === 'admin' ? '管理员通用' : '客户'); const progress = node('div', 'progress');
     if (record.unlimited) progress.append(node('small', '', `无限次 · 已用 ${record.useCount} 次`));
-    else if (record.externalMode) { const bar = node('span'); const fill = node('i'); fill.style.width = `${Math.min(100, Math.round((record.externalUseCount / Math.max(1, record.externalUseLimit)) * 100))}%`; bar.append(fill); progress.append(bar, node('small', '', `外部码 ${record.externalUseCount}/${record.externalUseLimit} · 总成功 ${record.useCount} 次`)); }
+    else if (record.externalMode) { const bar = node('span'); const fill = node('i'); fill.style.width = `${Math.min(100, Math.round((record.externalUseCount / Math.max(1, record.externalUseLimit)) * 100))}%`; bar.append(fill); progress.append(bar, node('small', '', `仅 CDK ${record.externalUseCount}/${record.externalUseLimit} · 总成功 ${record.useCount} 次`)); }
     else if (record.repeatable) progress.append(node('small', '', `${record.state === 'pending' ? '激活后' : '后台码模式'}可重复 · 已成功 ${record.useCount} 次`));
     else { const bar = node('span'); const fill = node('i'); fill.style.width = `${Math.min(100, Math.round((record.useCount / Math.max(1, record.maxUses)) * 100))}%`; bar.append(fill); progress.append(bar, node('small', '', `${record.useCount}/${record.maxUses}`)); }
     const audits = record.checkoutAudits || [];
@@ -207,7 +207,7 @@ function renderCdks() {
       const auditList = node('div', 'checkout-audit-list');
       audits.forEach((audit) => {
         const item = node('div', 'checkout-audit-item');
-        const sourceLabel = audit.promoSource === 'external' ? '外部码' : (audit.promoSource === 'registered' ? '后台码' : '无优惠码');
+        const sourceLabel = audit.promoSource === 'external' ? '客户自有码' : (audit.promoSource === 'registered' ? '后台登记码' : '无优惠码');
         const auditCode = node('code', '', audit.promoCode || '未使用优惠码');
         item.append(auditCode, node('small', '', `${sourceLabel} · ${formatDate(audit.createdAt)}`));
         auditList.append(item);
@@ -216,7 +216,7 @@ function renderCdks() {
     }
     const lifecycle = record.unlimited
       ? '长期有效'
-      : (record.state === 'pending' ? `激活截止 ${formatDate(record.activationDeadline || record.expiresAt)}` : `${record.externalMode ? '外部模式 · ' : ''}有效至 ${formatDate(record.expiresAt)}`);
+      : (record.state === 'pending' ? `激活截止 ${formatDate(record.activationDeadline || record.expiresAt)}` : `${record.externalMode ? '仅 CDK 模式 · ' : ''}有效至 ${formatDate(record.expiresAt)}`);
     const actions = node('div', 'table-actions');
     const revoke = node('button', 'table-action table-action-neutral', record.state === 'revoked' ? '已停用' : '停用'); revoke.type = 'button'; revoke.disabled = record.state === 'revoked'; revoke.addEventListener('click', () => revokeCdk(record));
     const remove = node('button', 'table-action table-action-danger', '删除'); remove.type = 'button'; remove.addEventListener('click', () => deleteCdk(record)); actions.append(revoke, remove);
