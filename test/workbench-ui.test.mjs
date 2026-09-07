@@ -22,3 +22,7 @@ test('customer workbench exposes a clickable progress rail and readiness feedbac
   assert.match(workbenchScript, /function syncWorkflowStepFromScroll\(\)/);
   assert.match(workbenchScript, /window\.addEventListener\('scroll'/);
 });
+
+test('customer workbench explains when ChatGPT rejects an unusable promo code', () => {
+  assert.match(workbenchScript, /promo_not_eligible:\s*'该优惠码已失效。'/);
+});

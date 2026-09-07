@@ -84,6 +84,7 @@ const ERROR_MESSAGES = {
   relay_not_configured: '代理中继尚未配置。',
   relay_config_invalid: '代理中继配置无效。',
   rate_limited: '请求过于频繁，请稍后再试。',
+  promo_not_eligible: '该优惠码已失效。',
   checkout_rejected: 'ChatGPT 拒绝了本次 Checkout 请求，请检查 Token 和账户状态。',
   no_checkout_url: '上游未返回支付链接，请稍后重试。',
   all_origins_failed: 'Checkout 服务暂时不可用，请检查代理后重试。',

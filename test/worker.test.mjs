@@ -1314,6 +1314,70 @@ test('failed upstream checkout with an external promo does not start its restric
   }
 });
 
+test('checkout identifies an ineligible promo instead of reporting a generic rejection', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    detail: 'Discount code is not eligible',
+  }), {
+    status: 400,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  try {
+    const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.33' },
+      body: JSON.stringify({
+        cdk: issued.code,
+        accessToken: 'eyJ' + 'p'.repeat(80),
+        country: 'US',
+        promoCode: 'REDEEMEDPROMO9999',
+        seatQuantity: 2,
+      }),
+    }), env);
+    const data = await response.json();
+    assert.equal(response.status, 400);
+    assert.equal(data.error, 'promo_not_eligible');
+    assert.match(data.message, /Discount code is not eligible/);
+    assert.equal(env.DB.rows[0].use_count, 0);
+    assert.equal(env.DB.rows[0].external_mode_at, null);
+    assert.equal(env.DB.assignmentRows.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('checkout keeps unrelated upstream account failures as generic rejections', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    detail: 'Account is not eligible for this purchase',
+  }), {
+    status: 403,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  try {
+    const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.34' },
+      body: JSON.stringify({
+        cdk: issued.code,
+        accessToken: 'eyJ' + 'q'.repeat(80),
+        country: 'US',
+        promoCode: issued.promoCode,
+        seatQuantity: 2,
+      }),
+    }), env);
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).error, 'checkout_rejected');
+    assert.equal(env.DB.rows[0].use_count, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('a registered promo not assigned to the customer CDK still switches modes and releases its original promo', async () => {
   const env = createEnv();
   const issued = await issueCdk(env);

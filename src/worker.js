@@ -1109,6 +1109,25 @@ function describeError({ status, data, text, origin, networkError }) {
   return origin + ' -> ' + status + ': ' + message.slice(0, 800);
 }
 
+function classifyCheckoutRejection(result, hasPromoCode) {
+  if (!hasPromoCode) return 'checkout_rejected';
+  let payload = '';
+  try {
+    payload = typeof result?.data === 'string'
+      ? result.data
+      : JSON.stringify(result?.data || {});
+  } catch {
+    payload = '';
+  }
+  const detail = (payload + ' ' + String(result?.text || ''))
+    .slice(0, 4_000)
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+  const mentionsPromo = /\b(?:discount|promo(?:tion)?|coupon)(?:\s+code)?\b/.test(detail);
+  const unusable = /\b(?:not eligible|ineligible|not valid|invalid|expired|inactive|not active|already (?:been )?(?:redeemed|used)|(?:redeemed|used) already|cannot be applied|can't be applied|could not be applied)\b/.test(detail);
+  return mentionsPromo && unusable ? 'promo_not_eligible' : 'checkout_rejected';
+}
+
 async function handleTeamCheckout(request, env) {
   const limited = applyRateLimit(requestIp(request));
   if (!limited.ok) {
@@ -1365,7 +1384,7 @@ async function handleTeamCheckout(request, env) {
       return jsonResponse(
         {
           ok: false,
-          error: 'checkout_rejected',
+          error: classifyCheckoutRejection(result, Boolean(promoAuthorization.promoCode)),
           status: result.status,
           message: describeError({ ...result, origin }),
           attempts,
