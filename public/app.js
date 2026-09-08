@@ -66,7 +66,9 @@ const ERROR_MESSAGES = {
   cdk_revoked: '该 CDK 已被停用。',
   cdk_expired: '该 CDK 已过期。',
   cdk_exhausted: '该 CDK 的使用次数已耗尽。',
+  cdk_account_mismatch: '当前 Session 的邮箱与该 CDK 首次绑定的账号不一致，无法提链。请换回首次成功提链的账号。',
   cdk_verify_rate_limited: '校验过于频繁，请稍后再试。',
+  session_email_missing: '无法从当前 Session 识别邮箱，请重新复制完整的 Session JSON。',
   invalid_promo_code: '优惠码格式不正确，请填写 /p/ 后面的代码或完整优惠链接。',
   promo_not_registered: '该优惠码未在管理后台登记，无法使用本工作台提链。',
   promo_service_not_configured: '优惠码校验服务尚未配置，请联系管理员。',
@@ -801,7 +803,7 @@ elements.form.addEventListener('submit', async (event) => {
     elements.resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (error) {
     setStatus(elements.formStatus, error.message || '创建失败，请稍后重试。', 'error');
-    if (String(error.data?.error || '').startsWith('cdk_')) {
+    if (String(error.data?.error || '').startsWith('cdk_') && error.data?.error !== 'cdk_account_mismatch') {
       setTimeout(lockWorkbench, 1400);
     }
   } finally {

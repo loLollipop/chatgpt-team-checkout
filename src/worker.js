@@ -1,4 +1,6 @@
 import {
+  authorizeCdkAccount,
+  bindCdkAccount,
   createAdminCdk,
   createCdks,
   deleteCdk,
@@ -331,7 +333,7 @@ async function cdkSessionAuthorization(request, env, options = {}) {
 
 function cdkFailureStatus(error) {
   if (['cdk_service_not_configured', 'cdk_database_error'].includes(error)) return 503;
-  if (error === 'cdk_invalid_format') return 400;
+  if (['cdk_invalid_format', 'session_email_missing'].includes(error)) return 400;
   if (error === 'cdk_invalid') return 401;
   return 403;
 }
@@ -395,6 +397,14 @@ function extractAccessToken(raw) {
     }
   }
   return trimmed.replace(/\s+/g, '');
+}
+
+function accountEmailFromClaims(claims) {
+  const profile = claims?.['https://api.openai.com/profile'];
+  const email = typeof profile?.email === 'string'
+    ? profile.email
+    : (typeof claims?.email === 'string' ? claims.email : '');
+  return email.trim();
 }
 
 function buildTeamPayload({
@@ -1240,6 +1250,16 @@ async function handleTeamCheckout(request, env) {
     : await cdkSessionAuthorization(request, env);
   if (!cdkAuthorization.ok) return cdkFailureResponse(cdkAuthorization, env);
 
+  // Token 会由 ChatGPT Checkout 验证；这里先读取邮箱 claim，避免已绑定 CDK 请求触达上游。
+  const claims = decodeJwtPayload(accessToken);
+  const accountEmail = accountEmailFromClaims(claims);
+  const accountAuthorization = await safeCdkOperation(() => authorizeCdkAccount(
+    cdkAuthorization.id,
+    accountEmail,
+    env
+  ));
+  if (!accountAuthorization.ok) return cdkFailureResponse(accountAuthorization, env);
+
   let promoAuthorization = {
     ok: true,
     promoId: null,
@@ -1272,7 +1292,6 @@ async function handleTeamCheckout(request, env) {
   const proxyRoute = proxyResolution.route;
 
   const workspaceName = String(body.workspaceName || 'myWorkspace').trim().slice(0, 80) || 'myWorkspace';
-  const claims = decodeJwtPayload(accessToken);
   const auth = claims['https://api.openai.com/auth'] || {};
   const payload = buildTeamPayload({
     promoCode: promoAuthorization.promoCode,
@@ -1298,6 +1317,11 @@ async function handleTeamCheckout(request, env) {
     if (result.status >= 200 && result.status < 300) {
       const { url, sessionId } = resolveCheckoutUrl(result.data);
       if (url) {
+        // 只有 ChatGPT 已成功创建支付链后，才把客户 CDK 固定到本次 Session 邮箱。
+        const accountBinding = cdkAuthorization.kind === 'standard'
+          ? await safeCdkOperation(() => bindCdkAccount(cdkAuthorization.id, accountEmail, env))
+          : { ok: true };
+        if (!accountBinding.ok) return cdkFailureResponse(accountBinding, env);
         const usesAssignedInventoryPromo = cdkAuthorization.kind === 'standard' &&
           !cdkAuthorization.externalMode && promoAuthorization.assignedToCdk;
         const promoLifecycle = usesAssignedInventoryPromo

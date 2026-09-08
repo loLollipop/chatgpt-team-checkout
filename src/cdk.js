@@ -33,6 +33,30 @@ export async function hashCdk(value, pepper) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+function normalizeAccountEmail(value) {
+  const email = String(value || '').trim().toLowerCase();
+  return email.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
+}
+
+async function hashAccountEmail(value, pepper) {
+  const email = normalizeAccountEmail(value);
+  if (!email || !pepper) return '';
+  const bytes = new TextEncoder().encode(String(pepper) + ':cdk-account-email:' + email);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function fingerprintsEqual(leftValue, rightValue) {
+  const left = String(leftValue || '');
+  const right = String(rightValue || '');
+  const length = Math.max(left.length, right.length);
+  let difference = left.length ^ right.length;
+  for (let index = 0; index < length; index += 1) {
+    difference |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
+  }
+  return difference === 0;
+}
+
 function randomCdk() {
   const values = new Uint8Array(CDK_GROUPS * CDK_GROUP_LENGTH);
   crypto.getRandomValues(values);
@@ -297,6 +321,52 @@ export async function verifyCdkId(idValue, env, options = {}) {
      WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
   ).bind(id).first();
   return verifyCdkRow(row, env, options, new Date());
+}
+
+export async function authorizeCdkAccount(idValue, emailValue, env) {
+  if (!databaseReady(env)) return unavailableResult();
+  const id = Number(idValue);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'cdk_invalid' };
+  const row = await env.DB.prepare(
+    `SELECT id, kind, bound_email_hash FROM cdks
+     WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
+  ).bind(id).first();
+  if (!row) return { ok: false, error: 'cdk_invalid' };
+  if (rowKind(row) === CDK_KIND_ADMIN) return { ok: true, accountBindingRequired: false };
+  const emailHash = await hashAccountEmail(emailValue, env.CDK_HASH_PEPPER);
+  if (!emailHash) return { ok: false, error: 'session_email_missing' };
+  if (row.bound_email_hash && !fingerprintsEqual(row.bound_email_hash, emailHash)) {
+    return { ok: false, error: 'cdk_account_mismatch' };
+  }
+  return { ok: true, accountBindingRequired: !row.bound_email_hash };
+}
+
+export async function bindCdkAccount(idValue, emailValue, env) {
+  if (!databaseReady(env)) return unavailableResult();
+  const id = Number(idValue);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'cdk_invalid' };
+  const emailHash = await hashAccountEmail(emailValue, env.CDK_HASH_PEPPER);
+  if (!emailHash) return { ok: false, error: 'session_email_missing' };
+  const result = await env.DB.prepare(
+    `UPDATE cdks
+     SET bound_email_hash = COALESCE(bound_email_hash, ?1)
+     WHERE id = ?2
+       AND kind = 'standard'
+       AND deleted_at IS NULL
+       AND revoked_at IS NULL
+       AND (bound_email_hash IS NULL OR bound_email_hash = ?1)`
+  ).bind(emailHash, id).run();
+  if (Number(result?.meta?.changes || 0) === 1) return { ok: true, accountBound: true };
+  const row = await env.DB.prepare(
+    `SELECT id, kind, bound_email_hash FROM cdks
+     WHERE id = ?1 AND deleted_at IS NULL LIMIT 1`
+  ).bind(id).first();
+  if (!row) return { ok: false, error: 'cdk_invalid' };
+  if (rowKind(row) === CDK_KIND_ADMIN) return { ok: true, accountBound: false };
+  if (row.bound_email_hash && !fingerprintsEqual(row.bound_email_hash, emailHash)) {
+    return { ok: false, error: 'cdk_account_mismatch' };
+  }
+  return { ok: false, error: row.revoked_at ? 'cdk_revoked' : 'cdk_invalid' };
 }
 
 export async function recordRestrictedCheckoutSuccess(input, env, nowValue = new Date()) {

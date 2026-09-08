@@ -26,3 +26,9 @@ test('customer workbench exposes a clickable progress rail and readiness feedbac
 test('customer workbench explains when ChatGPT rejects an unusable promo code', () => {
   assert.match(workbenchScript, /promo_not_eligible:\s*'该优惠码已失效。'/);
 });
+
+test('customer workbench explains Session email binding failures without locking a valid CDK', () => {
+  assert.match(workbenchScript, /cdk_account_mismatch:\s*'当前 Session 的邮箱与该 CDK 首次绑定的账号不一致/);
+  assert.match(workbenchScript, /session_email_missing:\s*'无法从当前 Session 识别邮箱/);
+  assert.match(workbenchScript, /error\.data\?\.error !== 'cdk_account_mismatch'/);
+});

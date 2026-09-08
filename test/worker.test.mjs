@@ -7,6 +7,7 @@ import worker from '../src/worker.js';
 const cdkExpiryMigration = await readFile(new URL('../migrations/0007_align_customer_cdk_expiry.sql', import.meta.url), 'utf8');
 const externalPromoReleaseMigration = await readFile(new URL('../migrations/0009_release_external_cdk_promos.sql', import.meta.url), 'utf8');
 const externalUseLimitMigration = await readFile(new URL('../migrations/0010_add_external_use_limit.sql', import.meta.url), 'utf8');
+const cdkAccountBindingMigration = await readFile(new URL('../migrations/0011_bind_cdk_account_email.sql', import.meta.url), 'utf8');
 
 class MemoryStatement {
   constructor(database, query) {
@@ -244,6 +245,16 @@ class MemoryStatement {
       return { meta: { changes: 1 } };
     }
 
+    if (this.query.startsWith('UPDATE cdks SET bound_email_hash = COALESCE')) {
+      const [emailHash, id] = this.values;
+      const row = this.database.rows.find((item) => item.id === Number(id));
+      const bindable = row && row.kind === 'standard' && !row.deleted_at && !row.revoked_at &&
+        (!row.bound_email_hash || row.bound_email_hash === emailHash);
+      if (!bindable) return { meta: { changes: 0 } };
+      row.bound_email_hash ||= emailHash;
+      return { meta: { changes: 1 } };
+    }
+
     if (this.query.startsWith('UPDATE cdks SET external_use_limit = external_use_limit + ?1')) {
       const [quantity, id, now] = this.values;
       const row = this.database.rows.find((item) => item.id === Number(id));
@@ -353,6 +364,7 @@ class MemoryStatement {
         external_mode_at: null,
         external_use_count: 0,
         external_use_limit: 3,
+        bound_email_hash: null,
       });
       return { meta: { changes: 1, last_row_id: id } };
     }
@@ -469,6 +481,11 @@ test('external use limit migration gives existing CDKs the default three-use all
   assert.match(externalUseLimitMigration, /CHECK \(external_use_limit >= 3\)/);
 });
 
+test('CDK account binding migration stores only an email fingerprint', () => {
+  assert.match(cdkAccountBindingMigration, /bound_email_hash TEXT/);
+  assert.doesNotMatch(cdkAccountBindingMigration, /bound_email(?!_hash)/);
+});
+
 async function adminRequest(env, path, options = {}) {
   return worker.fetch(new Request('https://checkout.example' + path, {
     ...options,
@@ -511,6 +528,18 @@ async function saveProxy(env, country, proxyUrl) {
 
 function responseCookie(response) {
   return String(response.headers.get('set-cookie') || '').split(';')[0];
+}
+
+function accessTokenFor(email = 'customer@example.com') {
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({
+    'https://api.openai.com/profile': { email, email_verified: true },
+    'https://api.openai.com/auth': {
+      chatgpt_account_id: '00000000-0000-0000-0000-000000000001',
+      chatgpt_user_id: '00000000-0000-0000-0000-000000000002',
+    },
+  })).toString('base64url');
+  return `${header}.${payload}.test-signature`;
 }
 
 test('config endpoint exposes readiness but never relay credentials', async () => {
@@ -1021,7 +1050,7 @@ test('an active CDK session survives refresh and can create checkout without res
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({
-        accessToken: 'eyJ' + 'a'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         promoCode: issued.promoCode,
         seatDefault: 2,
@@ -1071,7 +1100,7 @@ test('admin universal CDK is reusable, consumes no promo and rotates the previou
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           cdk: first.code,
-          accessToken: 'eyJ' + 'z'.repeat(80),
+          accessToken: accessTokenFor(''),
           country: 'US',
           promoCode: 'EXTERNALADMINPROMO9999',
           seatQuantity: 2,
@@ -1136,7 +1165,7 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'a'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         currency: 'EUR',
         workspaceName: 'testWorkspace',
@@ -1190,7 +1219,7 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'a'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'JP',
         promoCode: issued.promoCode,
         seatDefault: 1,
@@ -1208,6 +1237,76 @@ test('checkout reuses a CDK for country changes, marks its registered promo sold
     assert.equal(env.DB.promoRows[0].auto_delete_at, firstAutoDeleteAt);
     assert.equal(secondData.cdkExpiresAt, firstAutoDeleteAt);
     assert.equal(secondCheckoutPayload.promo_code, issued.promoCode);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('customer CDK binds to the first successful Session email and rejects a different account', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const originalFetch = globalThis.fetch;
+  let checkoutCalls = 0;
+  globalThis.fetch = async () => {
+    checkoutCalls += 1;
+    return new Response(JSON.stringify({ checkout_session_id: `oaics_bound_${checkoutCalls}` }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const request = (email) => worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.35' },
+    body: JSON.stringify({
+      cdk: issued.code,
+      accessToken: accessTokenFor(email),
+      country: 'US',
+      seatQuantity: 2,
+    }),
+  }), env);
+
+  try {
+    assert.equal((await request('Owner@Example.com')).status, 200);
+    assert.equal(typeof env.DB.rows[0].bound_email_hash, 'string');
+    assert.equal(env.DB.rows[0].bound_email_hash.length, 64);
+    assert.equal(env.DB.rows[0].bound_email_hash.includes('owner@example.com'), false);
+
+    assert.equal((await request('owner@example.com')).status, 200);
+    const mismatch = await request('other@example.com');
+    assert.equal(mismatch.status, 403);
+    assert.equal((await mismatch.json()).error, 'cdk_account_mismatch');
+    assert.equal(checkoutCalls, 2);
+    assert.equal(env.DB.rows[0].use_count, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('customer checkout requires a Session token with an email claim before calling upstream', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const originalFetch = globalThis.fetch;
+  let checkoutCalls = 0;
+  globalThis.fetch = async () => {
+    checkoutCalls += 1;
+    return new Response('{}', { status: 500 });
+  };
+  try {
+    const response = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.36' },
+      body: JSON.stringify({
+        cdk: issued.code,
+        accessToken: accessTokenFor(''),
+        country: 'US',
+        seatQuantity: 2,
+      }),
+    }), env);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, 'session_email_missing');
+    assert.equal(checkoutCalls, 0);
+    assert.equal(env.DB.rows[0].bound_email_hash, null);
+    assert.equal(env.DB.rows[0].use_count, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1231,7 +1330,7 @@ test('customer CDK using an external promo is limited to three successful checko
       headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.31' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'x'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         promoCode: 'EXTERNALPROMO9999',
         seatQuantity: 2,
@@ -1296,7 +1395,7 @@ test('failed upstream checkout with an external promo does not start its restric
       headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.32' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'f'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         promoCode: 'EXTERNALFAILED9999',
         seatQuantity: 2,
@@ -1306,6 +1405,7 @@ test('failed upstream checkout with an external promo does not start its restric
     assert.equal(env.DB.rows[0].external_mode_at, null);
     assert.equal(env.DB.rows[0].external_use_count, 0);
     assert.equal(env.DB.rows[0].use_count, 0);
+    assert.equal(env.DB.rows[0].bound_email_hash, null);
     assert.equal(env.DB.auditRows.length, 0);
     assert.equal(env.DB.assignmentRows.length, 1);
     assert.equal(env.DB.assignmentRows[0].cdk_id, env.DB.rows[0].id);
@@ -1330,7 +1430,7 @@ test('checkout identifies an ineligible promo instead of reporting a generic rej
       headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.33' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'p'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         promoCode: 'REDEEMEDPROMO9999',
         seatQuantity: 2,
@@ -1364,7 +1464,7 @@ test('checkout keeps unrelated upstream account failures as generic rejections',
       headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.34' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'q'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         promoCode: issued.promoCode,
         seatQuantity: 2,
@@ -1401,7 +1501,7 @@ test('a registered promo not assigned to the customer CDK still switches modes a
       headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.33' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'r'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         promoCode: customerPromo,
         seatQuantity: 2,
@@ -1445,7 +1545,7 @@ test('a legacy one-use customer CDK upgrades to the three-use rule when it switc
     headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.34' },
     body: JSON.stringify({
       cdk: issued.code,
-      accessToken: 'eyJ' + 'g'.repeat(80),
+      accessToken: accessTokenFor(),
       country: 'US',
       promoCode: 'LEGACYCUSTOMERPROMO99',
       seatQuantity: 2,
@@ -1484,7 +1584,7 @@ test('admin can recharge an exhausted customer-only CDK and preserve its origina
     headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.35' },
     body: JSON.stringify({
       cdk: issued.code,
-      accessToken: 'eyJ' + 'h'.repeat(80),
+      accessToken: accessTokenFor(),
       country: 'US',
       promoCode: 'RECHARGECUSTOMERPROMO99',
       seatQuantity: 2,
@@ -1571,7 +1671,7 @@ test('legacy one-use CDKs keep their original exhaustion rule after migration', 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       cdk: issued.code,
-      accessToken: 'eyJ' + 'l'.repeat(80),
+      accessToken: accessTokenFor(),
       country: 'US',
       promoCode: issued.promoCode,
       seatQuantity: 2,
@@ -1611,7 +1711,7 @@ test('checkout prefers an admin-imported proxy and sends it only inside the Rela
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'b'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         promoCode: issued.promoCode,
         seatQuantity: 2,
@@ -1702,7 +1802,7 @@ test('checkout fails closed when selected country has no proxy without consuming
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       cdk: issued.code,
-      accessToken: 'eyJ' + 'a'.repeat(80),
+      accessToken: accessTokenFor(),
       country: 'JP',
       seatQuantity: 2,
     }),
@@ -1722,7 +1822,7 @@ test('checkout rejects countries outside the visual allowlist', async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       cdk: 'AAAA-BBBB-CCCC-DDDD',
-      accessToken: 'eyJ' + 'a'.repeat(80),
+      accessToken: accessTokenFor(),
       country: 'DE',
       seatQuantity: 2,
     }),
@@ -1741,7 +1841,7 @@ test('checkout rejects unsupported seat types without consuming a CDK', async ()
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       cdk: issued.code,
-      accessToken: 'eyJ' + 'a'.repeat(80),
+      accessToken: accessTokenFor(),
       country: 'US',
       seatQuantity: 2,
       seatType: 'enterprise',
@@ -1763,7 +1863,7 @@ test('checkout requires standard and advanced seats to total at least two', asyn
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       cdk: issued.code,
-      accessToken: 'eyJ' + 'a'.repeat(80),
+      accessToken: accessTokenFor(),
       country: 'US',
       seatDefault: 1,
       seatProlite: 0,
@@ -1785,7 +1885,7 @@ test('checkout rejects unsupported billing periods without consuming a CDK', asy
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       cdk: issued.code,
-      accessToken: 'eyJ' + 'a'.repeat(80),
+      accessToken: accessTokenFor(),
       country: 'US',
       seatDefault: 2,
       seatProlite: 0,
@@ -1815,7 +1915,7 @@ test('checkout rejects promo codes for annual billing before CDK consumption or 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'a'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         promoCode: issued.promoCode,
         seatDefault: 2,
@@ -1847,7 +1947,7 @@ test('checkout rejects promo codes for advanced-only orders before CDK consumpti
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'a'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         promoCode: issued.promoCode,
         seatDefault: 0,
@@ -1883,7 +1983,7 @@ test('checkout keeps official annual billing payloads available when no promo co
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         cdk: issued.code,
-        accessToken: 'eyJ' + 'a'.repeat(80),
+        accessToken: accessTokenFor(),
         country: 'US',
         promoCode: '',
         seatDefault: 5,
