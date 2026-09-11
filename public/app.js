@@ -59,6 +59,7 @@ const elements = {
 
 const ERROR_MESSAGES = {
   invalid_json: '请求格式错误，请刷新后重试。',
+  payload_too_large: '请求内容过大，请缩短后重试。',
   cdk_service_not_configured: 'CDK 服务尚未配置，请联系管理员。',
   cdk_database_error: 'CDK 数据库暂时不可用，请稍后重试。',
   cdk_invalid_format: 'CDK 格式不正确，应为 XXXX-XXXX-XXXX-XXXX。',
@@ -89,8 +90,16 @@ const ERROR_MESSAGES = {
   promo_not_eligible: '该优惠码已失效。',
   checkout_rejected: 'ChatGPT 拒绝了本次 Checkout 请求，请检查 Token 和账户状态。',
   no_checkout_url: '上游未返回支付链接，请稍后重试。',
+  invalid_checkout_url: '服务返回的支付链接未通过安全校验，请稍后重试。',
   all_origins_failed: 'Checkout 服务暂时不可用，请检查代理后重试。',
 };
+const CHECKOUT_URL_HOSTS = new Set([
+  'chatgpt.com',
+  'chat.openai.com',
+  'pay.openai.com',
+  'checkout.openai.com',
+  'checkout.stripe.com',
+]);
 
 // Token 显隐按钮的两枚 SVG 图标（显示 ↔ 隐藏）
 const ICON_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
@@ -136,6 +145,28 @@ async function requestJson(path, options = {}) {
     throw error;
   }
   return data;
+}
+
+function trustedCheckoutUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    if (
+      url.protocol !== 'https:' ||
+      url.port ||
+      url.username ||
+      url.password ||
+      !CHECKOUT_URL_HOSTS.has(url.hostname.toLowerCase())
+    ) return '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function clearCheckoutResult() {
+  elements.resultCard.hidden = true;
+  elements.resultUrl.value = '';
+  elements.openResult.href = '#';
 }
 
 function normalizeCdkDisplay(value) {
@@ -772,6 +803,7 @@ elements.form.addEventListener('submit', async (event) => {
     elements.promoCode.focus();
     return;
   }
+  clearCheckoutResult();
   setLoading(elements.generateButton, true, elements.generateLabel, '正在创建 Checkout…', '生成支付长链');
   setStatus(elements.formStatus, '正在通过所选国家代理创建 ChatGPT Checkout…', 'info');
   try {
@@ -788,8 +820,14 @@ elements.form.addEventListener('submit', async (event) => {
         billingPeriod: currentBillingPeriod(),
       }),
     });
-    elements.resultUrl.value = data.url;
-    elements.openResult.href = data.url;
+    const checkoutUrl = trustedCheckoutUrl(data.url);
+    if (!checkoutUrl) {
+      const error = new Error(ERROR_MESSAGES.invalid_checkout_url);
+      error.data = { error: 'invalid_checkout_url' };
+      throw error;
+    }
+    elements.resultUrl.value = checkoutUrl;
+    elements.openResult.href = checkoutUrl;
     elements.resultCard.hidden = false;
     if (!scheduleCdkExpiry(data)) {
       expireCdkSession();

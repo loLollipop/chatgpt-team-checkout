@@ -13,7 +13,37 @@ test('admin refresh waits for session restoration before revealing login or dash
   assert.match(adminHtml, /id="admin-app" class="admin-app" hidden/);
   assert.match(adminScript, /function showAdmin\(\).*elements\.loadingView\.hidden = true/);
   assert.match(adminScript, /function showLogin\(\).*elements\.loadingView\.hidden = true/);
-  assert.match(adminScript, /await loadAllData\(\);\s*showAdmin\(\);/);
+  assert.match(adminScript, /await adminFetch\('\/api\/admin\/session'\)/);
+  assert.match(adminScript, /if \(error\.status === 401\) \{\s*showLogin\(\)/);
+  assert.match(adminScript, /showAdmin\(\);[\s\S]*?await loadAllData\(\);[\s\S]*?登录已恢复，但数据加载失败/);
+});
+
+test('admin login keeps an authenticated shell visible when initial data loading fails', () => {
+  assert.match(adminScript, /await adminFetch\('\/api\/admin\/session', \{ method: 'POST'/);
+  assert.match(adminScript, /state\.token = '';[\s\S]*?showAdmin\(\);[\s\S]*?await loadAllData\(\);/);
+  assert.match(adminScript, /登录成功，但数据加载失败/);
+});
+
+test('promo page responses are ordered across full refreshes and filter changes', () => {
+  assert.match(adminScript, /let promoRequestId = 0/);
+  assert.match(adminScript, /const requestId = \+\+promoRequestId/);
+  assert.match(adminScript, /return \{ \.\.\.request, requestId, result \}/);
+  assert.match(adminScript, /const promoIsCurrent = promoPage\.requestId === promoRequestId/);
+  assert.match(adminScript, /if \(promoIsCurrent\) \{[\s\S]*?state\.promos = promoPage\.result/);
+  assert.match(adminScript, /if \(promoPage\.requestId !== promoRequestId\) return false/);
+  assert.match(adminScript, /loadAllData\(\)[\s\S]*?requestPromoPage\(state\.promoPage\)/);
+  assert.match(adminScript, /loadPromoPage\(page\)[\s\S]*?requestPromoPage\(state\.promoPage\)/);
+  assert.match(adminScript, /renderAll\(\{ includePromos: promoIsCurrent \}\)/);
+  assert.doesNotMatch(adminScript, /state\.promoPage = page;/);
+});
+
+test('mobile sidebar exposes and synchronizes accessible drawer state', () => {
+  assert.match(adminHtml, /id="menu-button"[^>]*aria-expanded="false"[^>]*aria-controls="sidebar"/);
+  assert.match(adminScript, /elements\.sidebar\.inert = mobile && !open/);
+  assert.match(adminScript, /querySelector\('\.nav-item\.active, \.nav-item'\)\?\.focus\(\)/);
+  assert.match(adminScript, /event\.key === 'Escape'[\s\S]*?closeSidebar\(\{ restoreFocus: true \}\)/);
+  assert.match(adminScript, /navigate\(view\)[\s\S]*?closeSidebar\(\{ restoreFocus: true \}\)/);
+  assert.match(adminScript, /mobileSidebarQuery\.addEventListener\('change', syncSidebarAccessibility\)/);
 });
 
 test('promo inventory statistics use a compact four-column desktop grid', () => {

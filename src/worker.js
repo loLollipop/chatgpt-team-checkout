@@ -63,6 +63,15 @@ const ADMIN_SESSION_COOKIE = 'team_admin_session';
 const CDK_SESSION_COOKIE = 'team_cdk_session';
 const ADMIN_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const ADMIN_CDK_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const JSON_BODY_LIMIT_BYTES = 256 * 1024;
+const CHECKOUT_URL_HOSTS = new Set([
+  'chatgpt.com',
+  'chat.openai.com',
+  'pay.openai.com',
+  'checkout.openai.com',
+  'checkout.stripe.com',
+]);
+const CHECKOUT_SESSION_ID_PATTERN = /^(?:oaics_[A-Za-z0-9_-]{3,250}|cs_(?:live|test)_[A-Za-z0-9]{8,240})$/;
 
 // 这里是前后端共用的唯一国家清单。代理地址不放在代码中，而由 Worker secret 配置。
 const COUNTRIES = [
@@ -79,38 +88,67 @@ const COUNTRIES = [
 const COUNTRY_BY_CODE = Object.fromEntries(COUNTRIES.map((country) => [country.code, country]));
 let exchangeRateCache = { expiresAt: 0, payload: null };
 
-// 简易内存限速：每个 IP 60 秒最多 20 次（边缘实例足够个人/小团队）。
+// 单实例内存限速只用于削峰；生产环境仍需由 Cloudflare WAF / Rate Limiting 提供全局保护。
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 20;
 const rateBucket = new Map();
 const CDK_VERIFY_RATE_LIMIT_MAX = 12;
 const cdkVerifyRateBucket = new Map();
+const ADMIN_LOGIN_RATE_LIMIT_WINDOW_MS = 10 * 60_000;
+const ADMIN_LOGIN_RATE_LIMIT_MAX = 5;
+const adminLoginRateBucket = new Map();
+const RATE_BUCKET_CAPACITY = 10_000;
 
-function applyRateLimit(ip) {
+function applyMemoryRateLimit(bucket, ip, maximum, windowMs) {
   const now = Date.now();
-  const slot = rateBucket.get(ip);
+  const slot = bucket.get(ip);
   if (!slot || slot.resetAt <= now) {
-    rateBucket.set(ip, { resetAt: now + RATE_LIMIT_WINDOW_MS, count: 1 });
+    if (bucket.size >= RATE_BUCKET_CAPACITY) {
+      for (const [key, candidate] of bucket) {
+        if (candidate.resetAt <= now) bucket.delete(key);
+      }
+    }
+    if (bucket.size >= RATE_BUCKET_CAPACITY) {
+      const oldestKey = bucket.keys().next().value;
+      if (oldestKey !== undefined) bucket.delete(oldestKey);
+    }
+    bucket.set(ip, { resetAt: now + windowMs, count: 1 });
     return { ok: true };
   }
-  if (slot.count >= RATE_LIMIT_MAX) {
+  if (slot.count >= maximum) {
     return { ok: false, retryAfterSec: Math.ceil((slot.resetAt - now) / 1000) };
   }
   slot.count += 1;
   return { ok: true };
 }
 
+function applyRateLimit(ip) {
+  return applyMemoryRateLimit(rateBucket, ip, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+}
+
 function applyCdkVerifyRateLimit(ip) {
+  return applyMemoryRateLimit(cdkVerifyRateBucket, ip, CDK_VERIFY_RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+}
+
+function applyAdminLoginRateLimit(ip) {
+  return applyMemoryRateLimit(
+    adminLoginRateBucket,
+    ip,
+    ADMIN_LOGIN_RATE_LIMIT_MAX,
+    ADMIN_LOGIN_RATE_LIMIT_WINDOW_MS
+  );
+}
+
+function adminLoginRateLimitStatus(ip) {
   const now = Date.now();
-  const slot = cdkVerifyRateBucket.get(ip);
+  const slot = adminLoginRateBucket.get(ip);
   if (!slot || slot.resetAt <= now) {
-    cdkVerifyRateBucket.set(ip, { resetAt: now + RATE_LIMIT_WINDOW_MS, count: 1 });
+    if (slot) adminLoginRateBucket.delete(ip);
     return { ok: true };
   }
-  if (slot.count >= CDK_VERIFY_RATE_LIMIT_MAX) {
+  if (slot.count >= ADMIN_LOGIN_RATE_LIMIT_MAX) {
     return { ok: false, retryAfterSec: Math.ceil((slot.resetAt - now) / 1000) };
   }
-  slot.count += 1;
   return { ok: true };
 }
 
@@ -140,6 +178,55 @@ function jsonResponse(body, status = 200, extraHeaders = {}, env = {}) {
       ...extraHeaders,
     },
   });
+}
+
+async function readJsonBody(request) {
+  const contentLength = request.headers.get('content-length');
+  if (contentLength && /^\d+$/.test(contentLength.trim()) && Number(contentLength) > JSON_BODY_LIMIT_BYTES) {
+    return { ok: false, error: 'payload_too_large' };
+  }
+
+  const reader = request.body?.getReader();
+  if (!reader) return { ok: false, error: 'invalid_json' };
+  const decoder = new TextDecoder();
+  let byteLength = 0;
+  let text = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > JSON_BODY_LIMIT_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The size decision is final even when an upstream stream cannot be cancelled cleanly.
+        }
+        return { ok: false, error: 'payload_too_large' };
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return { ok: true, value: JSON.parse(text) };
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function jsonBodyOrResponse(request, env) {
+  const parsed = await readJsonBody(request);
+  if (parsed.ok) return parsed;
+  return {
+    ...parsed,
+    response: jsonResponse(
+      { ok: false, error: parsed.error },
+      parsed.error === 'payload_too_large' ? 413 : 400,
+      {},
+      env
+    ),
+  };
 }
 
 function fallbackExchangeRates() {
@@ -300,24 +387,36 @@ function adminBearerAuthorization(request, env) {
   if (!env.ADMIN_TOKEN) return { ok: false, error: 'admin_not_configured', status: 503 };
   const authorization = request.headers.get('authorization') || '';
   const received = /^Bearer\s+(.+)$/i.exec(authorization)?.[1] || '';
-  if (!received || !constantTimeEqual(received, env.ADMIN_TOKEN)) {
+  if (!received) {
     return { ok: false, error: 'admin_unauthorized', status: 401 };
   }
+  const ip = requestIp(request);
+  const currentLimit = adminLoginRateLimitStatus(ip);
+  if (!currentLimit.ok) {
+    return {
+      ok: false,
+      error: 'admin_login_rate_limited',
+      status: 429,
+      retryAfterSec: currentLimit.retryAfterSec,
+    };
+  }
+  if (!constantTimeEqual(received, env.ADMIN_TOKEN)) {
+    applyAdminLoginRateLimit(ip);
+    return { ok: false, error: 'admin_unauthorized', status: 401 };
+  }
+  adminLoginRateBucket.delete(ip);
   return { ok: true };
 }
 
 async function adminAuthorization(request, env) {
   if (!env.ADMIN_TOKEN) return { ok: false, error: 'admin_not_configured', status: 503 };
-  const bearer = adminBearerAuthorization(request, env);
-  if (bearer.ok) return bearer;
   const session = await verifySignedSession(
     requestCookie(request, ADMIN_SESSION_COOKIE),
     'admin',
     env.ADMIN_TOKEN
   );
-  return session
-    ? { ok: true, session }
-    : { ok: false, error: 'admin_unauthorized', status: 401 };
+  if (session) return { ok: true, session };
+  return adminBearerAuthorization(request, env);
 }
 
 async function cdkSessionAuthorization(request, env, options = {}) {
@@ -609,12 +708,9 @@ async function handleCdkVerify(request, env) {
     );
   }
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
-  }
+  const parsed = await jsonBodyOrResponse(request, env);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.value;
   const result = await safeCdkOperation(() => verifyCdk(body.cdk, env));
   if (!result.ok) return cdkFailureResponse(result, env);
   const expiresAtMs = result.unlimited
@@ -694,7 +790,21 @@ async function handleAdminSession(request, env) {
   }
   if (request.method === 'POST') {
     const authorization = adminBearerAuthorization(request, env);
-    if (!authorization.ok) return jsonResponse({ ok: false, error: authorization.error }, authorization.status, {}, env);
+    if (!authorization.ok) {
+      const headers = authorization.retryAfterSec
+        ? { 'Retry-After': String(authorization.retryAfterSec) }
+        : {};
+      return jsonResponse(
+        {
+          ok: false,
+          error: authorization.error,
+          ...(authorization.retryAfterSec ? { retryAfterSec: authorization.retryAfterSec } : {}),
+        },
+        authorization.status,
+        headers,
+        env
+      );
+    }
     const expiresAtMs = Date.now() + ADMIN_SESSION_TTL_MS;
     const session = await createSignedSession('admin', {}, env.ADMIN_TOKEN, expiresAtMs);
     return jsonResponse(
@@ -726,12 +836,9 @@ async function handleAdminUniversalCdk(request, env) {
   if (request.method !== 'POST') {
     return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
   }
-  let body = {};
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
-  }
+  const parsed = await jsonBodyOrResponse(request, env);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.value;
   const result = await safeCdkOperation(() => createAdminCdk(body, env));
   if (!result.ok) return cdkFailureResponse(result, env);
   return jsonResponse(result, 201, { 'Cache-Control': 'no-store' }, env);
@@ -756,12 +863,9 @@ async function handleAdminCdks(request, env) {
   }
 
   if (request.method === 'POST') {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
-    }
+    const parsed = await jsonBodyOrResponse(request, env);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.value;
     const result = await safeCdkOperation(() => createCdks(body, env));
     if (!result.ok) {
       const status = result.error.startsWith('promo_')
@@ -783,7 +887,8 @@ async function handleAdminPromos(request, env) {
 
   if (request.method === 'GET') {
     const url = new URL(request.url);
-    await safePromoOperation(() => cleanupExpiredPromoCodes(env));
+    const cleanup = await safePromoOperation(() => cleanupExpiredPromoCodes(env));
+    if (!cleanup.ok) console.error('opportunistic_promo_cleanup_failed', cleanup.error);
     const result = await safePromoOperation(() => listPromoCodes(env, {
       limit: url.searchParams.get('limit') || 20,
       page: url.searchParams.get('page') || 1,
@@ -794,12 +899,9 @@ async function handleAdminPromos(request, env) {
   }
 
   if (request.method === 'POST') {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
-    }
+    const parsed = await jsonBodyOrResponse(request, env);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.value;
     const result = await safePromoOperation(() => importPromoCodes(body, env));
     if (!result.ok) return promoFailureResponse(result, env);
     return jsonResponse(result, 201, { 'Cache-Control': 'no-store' }, env);
@@ -835,12 +937,9 @@ async function handleAdminCdkItem(request, env, id, action = '') {
     if (request.method !== 'POST') {
       return jsonResponse({ ok: false, error: 'method_not_allowed' }, 405, {}, env);
     }
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
-    }
+    const parsed = await jsonBodyOrResponse(request, env);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.value;
     const result = await safeCdkOperation(() => rechargeCdkUses(id, body.quantity, env));
     if (!result.ok) {
       const status = ['cdk_service_not_configured', 'cdk_database_error'].includes(result.error)
@@ -883,12 +982,9 @@ async function handleAdminProxies(request, env) {
   }
 
   if (request.method === 'POST') {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
-    }
+    const parsed = await jsonBodyOrResponse(request, env);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.value;
     const result = await safeProxyOperation(() => saveProxyRoutes(body, env, supportedCountryCodes()));
     if (!result.ok) return proxyFailureResponse(result, env);
     return jsonResponse(result, 201, { 'Cache-Control': 'no-store' }, env);
@@ -1093,11 +1189,29 @@ async function postCheckout(origin, payload, targetHeaders, proxyRoute, country)
 }
 
 function resolveCheckoutUrl(data) {
-  if (typeof data?.url === 'string' && /^https:\/\//.test(data.url)) {
-    return { url: data.url, sessionId: data.checkout_session_id || '' };
+  if (typeof data?.url === 'string' && data.url.trim()) {
+    try {
+      const url = new URL(data.url);
+      if (
+        url.protocol === 'https:' &&
+        !url.port &&
+        !url.username &&
+        !url.password &&
+        CHECKOUT_URL_HOSTS.has(url.hostname.toLowerCase())
+      ) {
+        const sessionId = typeof data.checkout_session_id === 'string' &&
+          CHECKOUT_SESSION_ID_PATTERN.test(data.checkout_session_id)
+          ? data.checkout_session_id
+          : '';
+        return { url: url.toString(), sessionId };
+      }
+    } catch {
+      // Invalid upstream URLs fail closed below.
+    }
+    return { url: '', sessionId: '' };
   }
   const sessionId = data?.checkout_session_id;
-  if (typeof sessionId === 'string' && sessionId) {
+  if (typeof sessionId === 'string' && CHECKOUT_SESSION_ID_PATTERN.test(sessionId)) {
     if (sessionId.startsWith('oaics_')) {
       return { url: 'https://chatgpt.com/checkout/openai_llc/' + sessionId, sessionId };
     }
@@ -1149,12 +1263,9 @@ async function handleTeamCheckout(request, env) {
     );
   }
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse({ ok: false, error: 'invalid_json' }, 400, {}, env);
-  }
+  const parsed = await jsonBodyOrResponse(request, env);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.value;
 
   const accessToken = extractAccessToken(body.accessToken || '');
   if (!accessToken) return jsonResponse({ ok: false, error: 'missing_access_token' }, 400, {}, env);
@@ -1510,10 +1621,18 @@ export default {
     return jsonResponse({ ok: false, error: 'not_found', path: url.pathname }, 404, {}, env);
   },
   async scheduled(_controller, env, ctx) {
-    const maintenance = Promise.all([
-      safeCdkOperation(() => synchronizeCustomerCdkExpiry(env)),
-      safePromoOperation(() => cleanupExpiredPromoCodes(env)),
-    ]);
+    const maintenance = (async () => {
+      const results = await Promise.all([
+        safeCdkOperation(() => synchronizeCustomerCdkExpiry(env)),
+        safePromoOperation(() => cleanupExpiredPromoCodes(env)),
+      ]);
+      const failures = results.filter((result) => !result.ok);
+      if (failures.length) {
+        console.error('scheduled_maintenance_failed', failures.map((result) => result.error));
+        throw new Error(`scheduled_maintenance_failed: ${failures.map((result) => result.error).join(', ')}`);
+      }
+      return results;
+    })();
     if (ctx?.waitUntil) ctx.waitUntil(maintenance);
     else await maintenance;
   },

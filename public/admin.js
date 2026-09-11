@@ -22,7 +22,7 @@ const VIEW_META = {
   proxies: ['Routing', '国家代理', '配置国家出口并快速定位异常线路。'],
 };
 const ERROR_MESSAGES = {
-  admin_unauthorized: '管理员密码错误，请重新输入。', admin_not_configured: '后台密码尚未配置。', cdk_service_not_configured: 'CDK 服务尚未配置。', cdk_database_error: 'CDK 数据库操作失败。',
+  admin_unauthorized: '管理员密码错误，请重新输入。', admin_not_configured: '后台密码尚未配置。', admin_login_rate_limited: '登录尝试过于频繁，请稍后再试。', payload_too_large: '请求内容过大，请减少后重试。', cdk_service_not_configured: 'CDK 服务尚未配置。', cdk_database_error: 'CDK 数据库操作失败。',
   promo_service_not_configured: '优惠码加密服务尚未配置。', promo_database_error: '优惠码数据库操作失败。', invalid_promo_import: '导入内容无效或数量超过限制。', no_valid_promo_codes: '没有识别到有效的优惠码或 chatgpt.com/p 链接。', promo_inventory_insufficient: '优惠码库存不足，请先导入后再生成 CDK。', promo_not_found: '优惠码不存在或已删除。', invalid_cdk_issue_mode: '请选择有效的 CDK 发放方式。',
   invalid_cdk_count: 'CDK 生成数量必须为 1–50。', invalid_cdk_recharge_quantity: '单次充值次数必须为 1–100。', cdk_not_rechargeable: '只能给尚未过期的“仅 CDK 模式”客户充值。', cdk_expired: '该 CDK 已过期，无法充值次数。', cdk_revoked: '该 CDK 已停用，无法充值次数。', cdk_not_found_or_revoked: 'CDK 不存在或已停用。', cdk_not_found: 'CDK 不存在或已删除。',
   proxy_service_not_configured: '代理加密服务尚未配置。', proxy_database_error: '代理数据库操作失败。', invalid_proxy_import: '代理导入格式无效。', invalid_proxy_url: '代理 URL 格式不正确。', unsupported_proxy_protocol: '仅支持 HTTP / HTTPS 代理。', unsupported_country: '国家代码不受支持。', proxy_not_found: '该国家没有已导入的代理。', relay_not_configured: 'Relay 尚未配置。', relay_probe_unreachable: 'Relay 无法连接。', relay_probe_timeout: '代理测试超时。', proxy_test_failed: '代理测试失败。',
@@ -30,6 +30,9 @@ const ERROR_MESSAGES = {
 const STATE_LABELS = { pending: '待激活', active: '有效', exhausted: '已耗尽', expired: '已过期', revoked: '已停用', available: '可用', assigned: '已分配', sold: '已使用', healthy: '健康', failed: '异常', untested: '未测试' };
 
 const state = { token: '', config: null, cdks: { records: [], stats: {} }, promos: { records: [], stats: {}, pagination: {} }, proxies: [], issued: [], fileCodes: [], cdkFilter: 'all', cdkSearch: '', cdkPage: 1, cdkPageSize: 20, promoFilter: 'all', promoPage: 1, promoPageSize: 20, proxyFilter: 'all' };
+let promoRequestId = 0;
+let sidebarReturnFocus = null;
+const mobileSidebarQuery = window.matchMedia('(max-width: 780px)');
 
 function node(tag, className = '', text = '') {
   const element = document.createElement(tag);
@@ -70,24 +73,42 @@ async function adminFetch(path, options = {}) {
 }
 
 async function loadAllData() {
-  const promoUrl = `/api/admin/promos?limit=${state.promoPageSize}&page=${state.promoPage}&state=${state.promoFilter}`;
-  const [config, cdks, promos, proxies] = await Promise.all([
-    fetch('/api/config').then((response) => response.json()), adminFetch('/api/admin/cdks?limit=500'), adminFetch(promoUrl), adminFetch('/api/admin/proxies'),
+  const [config, cdks, promoPage, proxies] = await Promise.all([
+    fetch('/api/config').then((response) => response.json()), adminFetch('/api/admin/cdks?limit=500'), requestPromoPage(state.promoPage), adminFetch('/api/admin/proxies'),
   ]);
-  state.config = config; state.cdks = cdks; state.promos = promos; state.proxies = proxies.records || [];
-  populateCountrySelects(); renderAll();
+  state.config = config; state.cdks = cdks; state.proxies = proxies.records || [];
+  const promoIsCurrent = promoPage.requestId === promoRequestId;
+  if (promoIsCurrent) {
+    state.promos = promoPage.result;
+    state.promoPage = Number(promoPage.result.pagination?.page || promoPage.page);
+  }
+  populateCountrySelects(); renderAll({ includePromos: promoIsCurrent });
+}
+
+async function requestPromoPage(page) {
+  const requestId = ++promoRequestId;
+  const request = {
+    page: Math.max(1, Number(page) || 1),
+    pageSize: state.promoPageSize,
+    filter: state.promoFilter,
+  };
+  const result = await adminFetch(`/api/admin/promos?limit=${request.pageSize}&page=${request.page}&state=${request.filter}`);
+  return { ...request, requestId, result };
 }
 
 async function loadPromoPage(page) {
   state.promoPage = Math.max(1, Number(page) || 1);
-  const result = await adminFetch(`/api/admin/promos?limit=${state.promoPageSize}&page=${state.promoPage}&state=${state.promoFilter}`);
-  const totalPages = Number(result.pagination?.totalPages || 1);
-  if (state.promoPage > totalPages) {
+  const promoPage = await requestPromoPage(state.promoPage);
+  if (promoPage.requestId !== promoRequestId) return false;
+  const totalPages = Math.max(1, Number(promoPage.result.pagination?.totalPages || 1));
+  if (promoPage.page > totalPages) {
     state.promoPage = totalPages;
     return loadPromoPage(totalPages);
   }
-  state.promos = result;
+  state.promoPage = promoPage.page;
+  state.promos = promoPage.result;
   renderPromos(); renderOverview(); renderServiceState();
+  return true;
 }
 
 function populateSelect(select) {
@@ -101,7 +122,7 @@ function populateSelect(select) {
 }
 function populateCountrySelects() { populateSelect(elements.proxyCountry); }
 
-function renderAll() { reconcileIssuedBundles(); renderOverview(); renderCdks(); renderPromos(); renderProxies(); renderServiceState(); renderIssued(); }
+function renderAll({ includePromos = true } = {}) { reconcileIssuedBundles(); renderOverview(); renderCdks(); if (includePromos) renderPromos(); renderProxies(); renderServiceState(); renderIssued(); }
 function renderServiceState() {
   const ready = Boolean(state.config?.cdkServiceReady && state.config?.promoServiceReady && state.config?.proxyAdminReady);
   elements.serviceDot.classList.toggle('healthy', ready); elements.serviceTitle.textContent = ready ? '核心服务正常' : '部分服务待配置';
@@ -266,7 +287,7 @@ function renderIssued() {
 function renderPromos() {
   const stats = state.promos.stats || {}; elements.promoTotal.textContent = stats.total ?? 0; elements.promoAvailable.textContent = stats.available ?? 0; elements.promoAssigned.textContent = stats.assigned ?? 0; elements.promoSold.textContent = stats.sold ?? 0;
   const records = state.promos.records || []; const pagination = state.promos.pagination || {};
-  const page = Number(pagination.page || state.promoPage); const totalPages = Number(pagination.totalPages || 1); const total = Number(pagination.total || 0); state.promoPage = page;
+  const page = Number(pagination.page || state.promoPage); const totalPages = Number(pagination.totalPages || 1); const total = Number(pagination.total || 0);
   elements.promoResultsCount.textContent = state.promoFilter === 'all' ? `共 ${total} 条记录` : `当前状态共 ${total} 条`;
   elements.promoPageSize.value = String(state.promoPageSize);
   elements.promoPageInfo.textContent = `第 ${page} / ${totalPages} 页`; elements.promoPrevPage.disabled = page <= 1; elements.promoNextPage.disabled = page >= totalPages;
@@ -300,10 +321,34 @@ function navigate(view) {
   $$('[data-view-panel]').forEach((panel) => { const active = panel.dataset.viewPanel === view; panel.hidden = !active; panel.classList.toggle('active', active); });
   [elements.pageEyebrow.textContent, elements.pageTitle.textContent, elements.pageDescription.textContent] = VIEW_META[view];
   if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
-  closeSidebar(); window.scrollTo({ top: 0, behavior: 'auto' });
+  closeSidebar({ restoreFocus: true }); window.scrollTo({ top: 0, behavior: 'auto' });
 }
-function openSidebar() { elements.sidebar.classList.add('open'); elements.backdrop.hidden = false; }
-function closeSidebar() { elements.sidebar.classList.remove('open'); elements.backdrop.hidden = true; }
+function syncSidebarAccessibility() {
+  const mobile = mobileSidebarQuery.matches;
+  const open = mobile && elements.sidebar.classList.contains('open');
+  elements.menuButton.setAttribute('aria-expanded', String(open));
+  elements.menuButton.setAttribute('aria-label', open ? '关闭导航' : '打开导航');
+  elements.backdrop.hidden = !open;
+  elements.sidebar.inert = mobile && !open;
+  if (!mobile) {
+    elements.sidebar.classList.remove('open');
+    sidebarReturnFocus = null;
+  }
+}
+function openSidebar() {
+  if (!mobileSidebarQuery.matches) return;
+  sidebarReturnFocus = document.activeElement;
+  elements.sidebar.classList.add('open');
+  syncSidebarAccessibility();
+  requestAnimationFrame(() => elements.sidebar.querySelector('.nav-item.active, .nav-item')?.focus());
+}
+function closeSidebar({ restoreFocus = false } = {}) {
+  const wasOpen = mobileSidebarQuery.matches && elements.sidebar.classList.contains('open');
+  elements.sidebar.classList.remove('open');
+  syncSidebarAccessibility();
+  if (restoreFocus && wasOpen) (sidebarReturnFocus || elements.menuButton).focus();
+  sidebarReturnFocus = null;
+}
 function showAdmin() { elements.loadingView.hidden = true; elements.loginView.hidden = true; elements.app.hidden = false; }
 function showLogin() { state.token = ''; elements.adminToken.value = ''; elements.loadingView.hidden = true; elements.app.hidden = true; elements.loginView.hidden = false; closeSidebar(); setStatus(elements.globalStatus); setTimeout(() => elements.adminToken.focus(), 50); }
 async function logout() { await fetch('/api/admin/session', { method: 'DELETE' }).catch(() => {}); showLogin(); }
@@ -311,18 +356,61 @@ async function logout() { await fetch('/api/admin/session', { method: 'DELETE' }
 async function restoreAdminSession() {
   try {
     await adminFetch('/api/admin/session');
-    await loadAllData();
+  } catch (error) {
+    if (error.status === 401) {
+      showLogin();
+      return false;
+    }
     showAdmin();
     navigate(VIEW_META[location.hash.slice(1)] ? location.hash.slice(1) : 'overview');
+    setStatus(elements.globalStatus, `会话校验暂时失败：${error.message} 请点击“刷新数据”重试。`, 'error');
+    return false;
+  }
+  showAdmin();
+  navigate(VIEW_META[location.hash.slice(1)] ? location.hash.slice(1) : 'overview');
+  try {
+    await loadAllData();
     return true;
-  } catch {
-    showLogin();
+  } catch (error) {
+    setStatus(elements.globalStatus, `登录已恢复，但数据加载失败：${error.message} 请点击“刷新数据”重试。`, 'error');
     return false;
   }
 }
 
-elements.loginForm.addEventListener('submit', async (event) => { event.preventDefault(); const token = elements.adminToken.value; if (!token) { setStatus(elements.loginStatus, '请输入管理员密码。', 'error'); return; } state.token = token; setButtonLoading(elements.loginButton, true, '正在登录…', '进入管理后台'); setStatus(elements.loginStatus, '正在校验并创建安全登录会话…', 'info'); try { await adminFetch('/api/admin/session', { method: 'POST', body: '{}' }); state.token = ''; await loadAllData(); elements.adminToken.value = ''; showAdmin(); setStatus(elements.loginStatus); navigate(VIEW_META[location.hash.slice(1)] ? location.hash.slice(1) : 'overview'); } catch (error) { state.token = ''; setStatus(elements.loginStatus, error.message, 'error'); } finally { setButtonLoading(elements.loginButton, false, '正在登录…', '进入管理后台'); } });
-elements.logoutButton.addEventListener('click', logout); elements.menuButton.addEventListener('click', openSidebar); elements.backdrop.addEventListener('click', closeSidebar);
+elements.loginForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const token = elements.adminToken.value;
+  if (!token) { setStatus(elements.loginStatus, '请输入管理员密码。', 'error'); return; }
+  state.token = token;
+  setButtonLoading(elements.loginButton, true, '正在登录…', '进入管理后台');
+  setStatus(elements.loginStatus, '正在校验并创建安全登录会话…', 'info');
+  try {
+    await adminFetch('/api/admin/session', { method: 'POST', body: '{}' });
+  } catch (error) {
+    state.token = '';
+    setStatus(elements.loginStatus, error.message, 'error');
+    setButtonLoading(elements.loginButton, false, '正在登录…', '进入管理后台');
+    return;
+  }
+  state.token = '';
+  elements.adminToken.value = '';
+  showAdmin();
+  setStatus(elements.loginStatus);
+  navigate(VIEW_META[location.hash.slice(1)] ? location.hash.slice(1) : 'overview');
+  try {
+    await loadAllData();
+  } catch (error) {
+    setStatus(elements.globalStatus, `登录成功，但数据加载失败：${error.message} 请点击“刷新数据”重试。`, 'error');
+  } finally {
+    setButtonLoading(elements.loginButton, false, '正在登录…', '进入管理后台');
+  }
+});
+elements.logoutButton.addEventListener('click', logout); elements.menuButton.addEventListener('click', openSidebar); elements.backdrop.addEventListener('click', () => closeSidebar({ restoreFocus: true }));
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && elements.sidebar.classList.contains('open')) closeSidebar({ restoreFocus: true });
+});
+if (mobileSidebarQuery.addEventListener) mobileSidebarQuery.addEventListener('change', syncSidebarAccessibility);
+else mobileSidebarQuery.addListener(syncSidebarAccessibility);
 $$('.nav-item').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view))); $$('[data-open-view]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.openView)));
 elements.refreshButton.addEventListener('click', async () => { setButtonLoading(elements.refreshButton, true, '刷新中…', '刷新数据'); setStatus(elements.globalStatus, '正在刷新全部数据…', 'info'); try { await loadAllData(); setStatus(elements.globalStatus, '数据已刷新。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } finally { setButtonLoading(elements.refreshButton, false, '刷新中…', '刷新数据'); } });
 
@@ -400,4 +488,4 @@ function focusProxyCountry(code) { elements.proxyCountry.value = code; elements.
 async function testProxy(code, button) { setButtonLoading(button, true, '测试中…', '测试代理'); try { const result = await adminFetch(`/api/admin/proxies/${code}/test`, { method: 'POST' }); setStatus(elements.globalStatus, `${code} 代理正常：出口 ${result.exitIp}，延迟 ${result.latencyMs} ms。`, 'success'); await loadAllData(); } catch (error) { setStatus(elements.globalStatus, `${code}：${error.message}`, 'error'); await loadAllData().catch(() => {}); } finally { if (document.body.contains(button)) setButtonLoading(button, false, '测试中…', '测试代理'); } }
 async function deleteProxy(code) { if (!confirm(`确定删除 ${code} 国家代理吗？删除后该国家无法提链。`)) return; try { await adminFetch(`/api/admin/proxies/${code}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, `${code} 代理已删除。`, 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 
-updateCdkIssueModeUi(); renderIssued(); restoreAdminSession();
+updateCdkIssueModeUi(); renderIssued(); syncSidebarAccessibility(); restoreAdminSession();

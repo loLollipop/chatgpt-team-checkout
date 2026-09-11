@@ -9,6 +9,7 @@ const externalPromoReleaseMigration = await readFile(new URL('../migrations/0009
 const externalUseLimitMigration = await readFile(new URL('../migrations/0010_add_external_use_limit.sql', import.meta.url), 'utf8');
 const cdkAccountBindingMigration = await readFile(new URL('../migrations/0011_bind_cdk_account_email.sql', import.meta.url), 'utf8');
 const cdkIssueModeMigration = await readFile(new URL('../migrations/0012_add_cdk_issue_mode.sql', import.meta.url), 'utf8');
+const devVarsExample = await readFile(new URL('../.dev.vars.example', import.meta.url), 'utf8');
 
 class MemoryStatement {
   constructor(database, query) {
@@ -135,7 +136,8 @@ class MemoryStatement {
 
   async run() {
     if (this.query.startsWith('UPDATE cdks SET expires_at = COALESCE')) {
-      const targetId = this.query.includes('AND id = ?1') ? Number(this.values[0]) : null;
+      const [now, targetIdValue] = this.values;
+      const targetId = this.query.includes('AND id = ?2') ? Number(targetIdValue) : null;
       let changes = 0;
       this.database.rows.forEach((row) => {
         if (
@@ -145,6 +147,7 @@ class MemoryStatement {
           row.deleted_at ||
           row.revoked_at ||
           row.external_mode_at ||
+          (this.query.includes('expires_at > ?1') && row.expires_at <= now) ||
           (targetId && row.id !== targetId)
         ) return;
         const assignment = this.database.assignmentRows.find((item) => item.cdk_id === row.id);
@@ -217,11 +220,11 @@ class MemoryStatement {
     }
 
     if (this.query.startsWith('UPDATE cdks SET expires_at = CASE')) {
-      const [promoId] = this.values;
+      const [promoId, now] = this.values;
       const promo = this.database.promoRows.find((row) => row.id === Number(promoId));
       const assignment = this.database.assignmentRows.find((row) => row.promo_code_id === Number(promoId));
       const cdk = assignment && this.database.rows.find((row) => row.id === assignment.cdk_id && row.kind === 'standard' && row.activated_at && !row.deleted_at && !row.revoked_at);
-      if (!promo?.auto_delete_at || !cdk) return { meta: { changes: 0 } };
+      if (!promo?.auto_delete_at || !cdk || (this.query.includes('expires_at > ?2') && cdk.expires_at <= now)) return { meta: { changes: 0 } };
       cdk.expires_at = cdk.external_mode_at && cdk.expires_at < promo.auto_delete_at
         ? cdk.expires_at
         : promo.auto_delete_at;
@@ -493,6 +496,12 @@ test('CDK issue mode migration defaults historical records and constrains new va
   assert.match(cdkIssueModeMigration, /CHECK \(issue_mode IN \('with_promo', 'cdk_only'\)\)/);
 });
 
+test('local development example includes every encryption secret', () => {
+  assert.match(devVarsExample, /^PROMO_ENCRYPTION_KEY=replace-with-/m);
+  assert.match(devVarsExample, /^PROXY_ENCRYPTION_KEY=replace-with-/m);
+  assert.match(devVarsExample, /^CDK_HASH_PEPPER=replace-with-/m);
+});
+
 async function adminRequest(env, path, options = {}) {
   return worker.fetch(new Request('https://checkout.example' + path, {
     ...options,
@@ -549,6 +558,23 @@ function accessTokenFor(email = 'customer@example.com') {
   return `${header}.${payload}.test-signature`;
 }
 
+function checkoutWithCdk(env, issued, overrides = {}, ip = '198.51.100.10') {
+  return worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip },
+    body: JSON.stringify({
+      cdk: issued.code,
+      accessToken: accessTokenFor(),
+      country: 'US',
+      promoCode: issued.promoCode,
+      seatDefault: 2,
+      seatProlite: 0,
+      billingPeriod: 'month',
+      ...overrides,
+    }),
+  }), env);
+}
+
 test('config endpoint exposes readiness but never relay credentials', async () => {
   const env = createEnv();
   const response = await worker.fetch(new Request('https://checkout.example/api/config'), env);
@@ -580,6 +606,49 @@ test('config endpoint exposes readiness but never relay credentials', async () =
   assert.equal(text.includes(relayUrl), false);
   assert.equal(text.includes(relayToken), false);
   assert.equal(text.includes(env.CDK_HASH_PEPPER), false);
+});
+
+test('public JSON endpoints reject streamed bodies over 256 KiB and keep malformed JSON at 400', async () => {
+  const env = createEnv();
+  const oversized = JSON.stringify({ value: 'x'.repeat(256 * 1024) });
+  const verifyResponse = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.21' },
+    body: oversized,
+  }), env);
+  const checkoutResponse = await worker.fetch(new Request('https://checkout.example/api/checkout/team', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.22' },
+    body: oversized,
+  }), env);
+  const malformedResponse = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.23' },
+    body: '{not-json',
+  }), env);
+  const cancelFailureBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(256 * 1024 + 1));
+    },
+    cancel() {
+      throw new Error('stream cancellation failed');
+    },
+  });
+  const cancelFailureResponse = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.24' },
+    body: cancelFailureBody,
+    duplex: 'half',
+  }), env);
+
+  assert.equal(verifyResponse.status, 413);
+  assert.equal((await verifyResponse.json()).error, 'payload_too_large');
+  assert.equal(checkoutResponse.status, 413);
+  assert.equal((await checkoutResponse.json()).error, 'payload_too_large');
+  assert.equal(malformedResponse.status, 400);
+  assert.equal((await malformedResponse.json()).error, 'invalid_json');
+  assert.equal(cancelFailureResponse.status, 413);
+  assert.equal((await cancelFailureResponse.json()).error, 'payload_too_large');
 });
 
 test('Relay country allowlist stays aligned with checkout countries', async () => {
@@ -669,6 +738,93 @@ test('admin login creates a persistent HttpOnly session cookie accepted after re
   }), env);
   assert.equal(logoutResponse.status, 200);
   assert.match(logoutResponse.headers.get('set-cookie'), /Max-Age=0/);
+});
+
+test('admin login has an independent per-instance rate limit', async () => {
+  const env = createEnv();
+  const validSessionResponse = await worker.fetch(new Request('https://checkout.example/api/admin/session', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + env.ADMIN_TOKEN,
+      'CF-Connecting-IP': '198.51.100.30',
+    },
+  }), env);
+  const validCookie = responseCookie(validSessionResponse);
+  assert.equal(validSessionResponse.status, 200);
+  const attempts = [];
+  for (let index = 0; index < 6; index += 1) {
+    attempts.push(await worker.fetch(new Request('https://checkout.example/api/admin/session', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer incorrect-token',
+        'CF-Connecting-IP': '198.51.100.30',
+      },
+    }), env));
+  }
+  assert.deepEqual(attempts.slice(0, 5).map((response) => response.status), [401, 401, 401, 401, 401]);
+  assert.equal(attempts[5].status, 429);
+  assert.equal((await attempts[5].json()).error, 'admin_login_rate_limited');
+  assert.ok(Number(attempts[5].headers.get('retry-after')) > 0);
+
+  const bypassResponse = await worker.fetch(new Request('https://checkout.example/api/admin/session', {
+    headers: {
+      Authorization: 'Bearer another-incorrect-token',
+      'CF-Connecting-IP': '198.51.100.30',
+    },
+  }), env);
+  assert.equal(bypassResponse.status, 429);
+  assert.equal((await bypassResponse.json()).error, 'admin_login_rate_limited');
+
+  const correctLoginWhileBlocked = await worker.fetch(new Request('https://checkout.example/api/admin/session', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + env.ADMIN_TOKEN,
+      'CF-Connecting-IP': '198.51.100.30',
+    },
+  }), env);
+  assert.equal(correctLoginWhileBlocked.status, 429);
+  assert.equal(correctLoginWhileBlocked.headers.get('set-cookie'), null);
+
+  const correctSessionGetWhileBlocked = await worker.fetch(new Request('https://checkout.example/api/admin/session', {
+    headers: {
+      Authorization: 'Bearer ' + env.ADMIN_TOKEN,
+      'CF-Connecting-IP': '198.51.100.30',
+    },
+  }), env);
+  assert.equal(correctSessionGetWhileBlocked.status, 429);
+
+  const correctAdminApiWhileBlocked = await worker.fetch(new Request('https://checkout.example/api/admin/cdks', {
+    headers: {
+      Authorization: 'Bearer ' + env.ADMIN_TOKEN,
+      'CF-Connecting-IP': '198.51.100.30',
+    },
+  }), env);
+  assert.equal(correctAdminApiWhileBlocked.status, 429);
+
+  const cookieSessionWhileBlocked = await worker.fetch(new Request('https://checkout.example/api/admin/cdks', {
+    headers: {
+      Cookie: validCookie,
+      'CF-Connecting-IP': '198.51.100.30',
+    },
+  }), env);
+  assert.equal(cookieSessionWhileBlocked.status, 200);
+
+  const realDateNow = Date.now;
+  const afterWindow = realDateNow() + 10 * 60_000 + 1;
+  Date.now = () => afterWindow;
+  try {
+    const recoveredLogin = await worker.fetch(new Request('https://checkout.example/api/admin/session', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + env.ADMIN_TOKEN,
+        'CF-Connecting-IP': '198.51.100.30',
+      },
+    }), env);
+    assert.equal(recoveredLogin.status, 200);
+    assert.match(recoveredLogin.headers.get('set-cookie'), /^team_admin_session=/);
+  } finally {
+    Date.now = realDateNow;
+  }
 });
 
 test('admin imports encrypted proxies and only lists masked metadata', async () => {
@@ -798,6 +954,43 @@ test('admin marks an assigned promo sold, hides its plaintext and scheduled clea
   assert.ok(promo.deleted_at);
   const afterCleanup = await adminRequest(env, '/api/admin/promos');
   assert.equal((await afterCleanup.json()).records.length, 0);
+});
+
+test('marking or synchronizing a promo never revives an already expired customer CDK', async () => {
+  const env = createEnv();
+  const issued = await issueCdk(env);
+  const verification = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.31' },
+    body: JSON.stringify({ cdk: issued.code }),
+  }), env);
+  assert.equal(verification.status, 200);
+
+  const expiredAt = new Date(Date.now() - 60_000).toISOString();
+  env.DB.rows[0].expires_at = expiredAt;
+  const soldResponse = await adminRequest(env, `/api/admin/promos/${env.DB.promoRows[0].id}/sold`, { method: 'POST' });
+  assert.equal(soldResponse.status, 200);
+  assert.equal(env.DB.rows[0].expires_at, expiredAt);
+
+  const listResponse = await adminRequest(env, '/api/admin/cdks');
+  const list = await listResponse.json();
+  assert.equal(listResponse.status, 200);
+  assert.equal(env.DB.rows[0].expires_at, expiredAt);
+  assert.equal(list.records[0].state, 'expired');
+});
+
+test('scheduled maintenance rejects when a guarded cleanup operation fails', async () => {
+  const env = createEnv();
+  env.DB.prepare = () => { throw new Error('database unavailable'); };
+  const originalConsoleError = console.error;
+  const errors = [];
+  console.error = (...values) => errors.push(values);
+  try {
+    await assert.rejects(worker.scheduled({}, env, {}), /scheduled_maintenance_failed/);
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.equal(errors.some(([message]) => message === 'scheduled_maintenance_failed'), true);
 });
 
 test('admin can manually delete an assigned promo', async () => {
@@ -1029,7 +1222,7 @@ test('old active customer CDKs are repaired to the new 24-hour lifetime on verif
 
   const activatedAt = new Date(Date.now() - 4 * 60 * 60 * 1_000).toISOString();
   env.DB.rows[0].activated_at = activatedAt;
-  env.DB.rows[0].expires_at = new Date(Date.now() - 60 * 60 * 1_000).toISOString();
+  env.DB.rows[0].expires_at = new Date(Date.now() + 60 * 60 * 1_000).toISOString();
 
   const response = await worker.fetch(new Request('https://checkout.example/api/cdk/verify', {
     method: 'POST',
@@ -2064,6 +2257,53 @@ test('checkout keeps official annual billing payloads available when no promo co
       { seat_type: 'prolite', quantity: 1 },
     ]);
     assert.equal('promo_code' in checkoutPayload, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('checkout only returns trusted HTTPS payment hosts and validated fallback session IDs', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const maliciousEnv = createEnv();
+    const maliciousCdk = await issueCdk(maliciousEnv);
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      url: 'https://attacker.example/collect',
+      checkout_session_id: 'oaics_valid_but_must_not_override_bad_url',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const maliciousResponse = await checkoutWithCdk(maliciousEnv, maliciousCdk, {}, '198.51.100.41');
+    assert.equal(maliciousResponse.status, 502);
+    assert.equal((await maliciousResponse.json()).error, 'no_checkout_url');
+    assert.equal(maliciousEnv.DB.rows[0].use_count, 0);
+    assert.equal(maliciousEnv.DB.promoRows[0].redeemed_at, null);
+
+    const allowedEnv = createEnv();
+    const allowedCdk = await issueCdk(allowedEnv);
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      url: 'https://checkout.stripe.com/c/pay/cs_test_allowed',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const allowedResponse = await checkoutWithCdk(allowedEnv, allowedCdk, {}, '198.51.100.42');
+    const allowed = await allowedResponse.json();
+    assert.equal(allowedResponse.status, 200);
+    assert.equal(allowed.url, 'https://checkout.stripe.com/c/pay/cs_test_allowed');
+
+    const invalidSessionEnv = createEnv();
+    const invalidSessionCdk = await issueCdk(invalidSessionEnv);
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      checkout_session_id: '../../outside-checkout',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const invalidSessionResponse = await checkoutWithCdk(invalidSessionEnv, invalidSessionCdk, {}, '198.51.100.43');
+    assert.equal(invalidSessionResponse.status, 502);
+    assert.equal((await invalidSessionResponse.json()).error, 'no_checkout_url');
+
+    const unknownSessionEnv = createEnv();
+    const unknownSessionCdk = await issueCdk(unknownSessionEnv);
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      checkout_session_id: 'otherwise_valid_characters',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const unknownSessionResponse = await checkoutWithCdk(unknownSessionEnv, unknownSessionCdk, {}, '198.51.100.44');
+    assert.equal(unknownSessionResponse.status, 502);
+    assert.equal((await unknownSessionResponse.json()).error, 'no_checkout_url');
   } finally {
     globalThis.fetch = originalFetch;
   }

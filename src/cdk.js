@@ -186,15 +186,18 @@ const CDK_SELECT_COLUMNS = `id, code_suffix, label, kind, max_uses, use_count,
   created_at, activated_at, expires_at, revoked_at, deleted_at, last_used_at,
   external_mode_at, external_use_count, external_use_limit, issue_mode`;
 
-export async function synchronizeCustomerCdkExpiry(env, idValue = null) {
+export async function synchronizeCustomerCdkExpiry(env, idValue = null, nowValue = new Date()) {
   if (!env?.DB) return unavailableResult();
   const hasId = idValue != null;
   const id = hasId ? Number(idValue) : null;
   if (hasId && (!Number.isInteger(id) || id <= 0)) {
     return { ok: false, error: 'invalid_cdk_id' };
   }
+  const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  if (Number.isNaN(now.getTime())) return { ok: false, error: 'invalid_cdk_timestamp' };
+  const nowIso = now.toISOString();
 
-  const idClause = hasId ? ' AND id = ?1' : '';
+  const idClause = hasId ? ' AND id = ?2' : '';
   const statement = env.DB.prepare(
     `UPDATE cdks
      SET expires_at = COALESCE(
@@ -213,6 +216,7 @@ export async function synchronizeCustomerCdkExpiry(env, idValue = null) {
        AND deleted_at IS NULL
        AND revoked_at IS NULL
        AND external_mode_at IS NULL
+       AND expires_at > ?1
        AND expires_at IS NOT COALESCE(
          (
            SELECT p.auto_delete_at
@@ -225,7 +229,7 @@ export async function synchronizeCustomerCdkExpiry(env, idValue = null) {
        )
        ${idClause}`
   );
-  const result = await (hasId ? statement.bind(id) : statement).run();
+  const result = await (hasId ? statement.bind(nowIso, id) : statement.bind(nowIso)).run();
   return { ok: true, updatedCount: Number(result?.meta?.changes || 0) };
 }
 

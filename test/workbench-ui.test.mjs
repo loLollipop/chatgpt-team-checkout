@@ -32,3 +32,13 @@ test('customer workbench explains Session email binding failures without locking
   assert.match(workbenchScript, /session_email_missing:\s*'无法从当前 Session 识别邮箱/);
   assert.match(workbenchScript, /error\.data\?\.error !== 'cdk_account_mismatch'/);
 });
+
+test('customer workbench validates checkout URLs before exposing them', () => {
+  assert.match(workbenchScript, /function trustedCheckoutUrl\(value\)/);
+  assert.match(workbenchScript, /url\.protocol !== 'https:'/);
+  assert.match(workbenchScript, /url\.port \|\|/);
+  assert.match(workbenchScript, /CHECKOUT_URL_HOSTS\.has\(url\.hostname\.toLowerCase\(\)\)/);
+  assert.match(workbenchScript, /const checkoutUrl = trustedCheckoutUrl\(data\.url\)/);
+  assert.match(workbenchScript, /elements\.openResult\.href = checkoutUrl/);
+  assert.match(workbenchScript, /invalid_checkout_url: '服务返回的支付链接未通过安全校验/);
+});

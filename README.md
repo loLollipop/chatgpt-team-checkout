@@ -39,7 +39,7 @@
 
 ## 首次部署
 
-需要 Node.js 20+、Cloudflare 账号和一个可部署 Node Relay 的环境。
+需要 Node.js 22+、Cloudflare 账号和一个可部署 Node Relay 的环境。
 
 ### 1. 安装依赖
 
@@ -53,7 +53,7 @@ npm install
 npx wrangler d1 create chatgpt-team-checkout-db
 ```
 
-将命令返回的 `database_id` 替换 [wrangler.toml](./wrangler.toml) 中的全零占位值，然后执行远程迁移：
+将命令返回的 `database_id` 替换 [wrangler.toml](./wrangler.toml) 中当前项目的数据库 ID，然后执行远程迁移。仓库内现有 ID 不是新部署可复用的占位值：
 
 ```powershell
 npx wrangler d1 migrations apply chatgpt-team-checkout-db --remote
@@ -136,7 +136,7 @@ npm run deploy
 
 ## 本地开发
 
-复制示例配置并修改其中的假密钥：
+复制示例配置，并把其中所有 `replace-with-...` 示例密钥和令牌替换为各自独立的真实随机值：
 
 ```powershell
 copy .dev.vars.example .dev.vars
@@ -157,6 +157,8 @@ npm run dev
 ```
 
 访问 `http://127.0.0.1:8787`。本地 Relay 地址可以使用 `http://127.0.0.1:8790/forward`；生产环境必须使用 HTTPS。
+
+Worker 内的 Checkout、CDK 校验和管理员登录限速仅作用于单个边缘实例，用于基础削峰，不能视为全局防护。生产环境还应配置 Cloudflare WAF / Rate Limiting 规则。
 
 ## CDK 行为
 
