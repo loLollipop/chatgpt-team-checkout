@@ -43,6 +43,27 @@ test('admin describes the synchronized 24-hour customer lifecycle', () => {
   assert.match(adminHtml, /自动释放原分配码/);
 });
 
+test('customer CDK generation exposes two accessible issue modes and submits the selection', () => {
+  assert.match(adminHtml, /name="cdk-issue-mode" value="with_promo" checked/);
+  assert.match(adminHtml, /name="cdk-issue-mode" value="cdk_only"/);
+  assert.match(adminHtml, /带码自动占用一条库存优惠码/);
+  assert.match(adminHtml, /仅 CDK 不占用库存，适合客户使用自己的优惠码/);
+  assert.match(adminScript, /mode = selectedCdkIssueMode\(\)/);
+  assert.match(adminScript, /JSON\.stringify\(\{ label: elements\.cdkLabel\.value\.trim\(\), count: Number\(elements\.cdkCount\.value\), mode \}\)/);
+  assert.match(adminScript, /elements\.cdkInventoryRow\.hidden = !withPromo/);
+  assert.match(adminScript, /withPromo \? '生成 CDK 并分配优惠码' : '仅生成 CDK'/);
+  assert.match(adminStyles, /\.cdk-mode-option input:focus-visible \+ span/);
+  assert.match(adminStyles, /\.cdk-mode-options\s*\{[^}]*grid-template-columns:\s*repeat\(2,/);
+});
+
+test('admin delivery text and list labels respect persisted issue mode', () => {
+  assert.match(adminScript, /if \(bundle\.promoCode\) lines\.push\(`优惠码：\$\{bundle\.promoCode\}`\)/);
+  assert.match(adminScript, /return lines\.join\('\\n'\)/);
+  assert.match(adminScript, /record\.issueMode === 'cdk_only' \? '客户 · 仅 CDK' : '客户 · 含优惠码'/);
+  assert.match(adminScript, /record\.issueMode === 'cdk_only' \? '仅 CDK 模式' : '后台码模式'/);
+  assert.doesNotMatch(adminScript, /record\.externalMode === 'cdk_only'/);
+});
+
 test('admin exposes customer checkout auditing without adding it to the customer workbench', () => {
   assert.match(adminHtml, /<th>提链审计<\/th>/);
   assert.match(adminScript, /record\.checkoutAudits/);

@@ -8,7 +8,7 @@ const elements = {
   pageTitle: $('#page-title'), pageEyebrow: $('#page-eyebrow'), pageDescription: $('#page-description'), globalStatus: $('#global-status'), serviceDot: $('#service-dot'), serviceTitle: $('#service-title'), serviceDetail: $('#service-detail'),
   navCdkCount: $('#nav-cdk-count'), navPromoCount: $('#nav-promo-count'), navProxyCount: $('#nav-proxy-count'),
   overviewCdkActive: $('#overview-cdk-active'), overviewCdkTotal: $('#overview-cdk-total'), overviewPromoAvailable: $('#overview-promo-available'), overviewPromoTotal: $('#overview-promo-total'), overviewProxyReady: $('#overview-proxy-ready'), overviewProxyTotal: $('#overview-proxy-total'), overviewPromoAssigned: $('#overview-promo-assigned'), inventoryList: $('#inventory-list'),
-  cdkForm: $('#cdk-create-form'), cdkLabel: $('#cdk-label'), cdkCount: $('#cdk-count'), cdkInventoryHint: $('#cdk-inventory-hint'), cdkCreateButton: $('#cdk-create-button'), cdkCreateStatus: $('#cdk-create-status'), cdkTableBody: $('#cdk-table-body'), cdkSearch: $('#cdk-search'), cdkPageSize: $('#cdk-page-size'), cdkResultsCount: $('#cdk-results-count'), cdkPageInfo: $('#cdk-page-info'), cdkPrevPage: $('#cdk-prev-page'), cdkNextPage: $('#cdk-next-page'),
+  cdkForm: $('#cdk-create-form'), cdkLabel: $('#cdk-label'), cdkCount: $('#cdk-count'), cdkModes: $$('input[name="cdk-issue-mode"]'), cdkRuleTitle: $('#cdk-rule-title'), cdkRuleDetail: $('#cdk-rule-detail'), cdkInventoryRow: $('#cdk-inventory-row'), cdkInventoryHint: $('#cdk-inventory-hint'), cdkCreateButton: $('#cdk-create-button'), cdkCreateStatus: $('#cdk-create-status'), cdkTableBody: $('#cdk-table-body'), cdkSearch: $('#cdk-search'), cdkPageSize: $('#cdk-page-size'), cdkResultsCount: $('#cdk-results-count'), cdkPageInfo: $('#cdk-page-info'), cdkPrevPage: $('#cdk-prev-page'), cdkNextPage: $('#cdk-next-page'),
   adminCdkCreate: $('#admin-cdk-create'), adminCdkResult: $('#admin-cdk-result'), adminCdkCode: $('#admin-cdk-code'), adminCdkCopy: $('#admin-cdk-copy'), adminCdkStatus: $('#admin-cdk-status'), adminCdkState: $('#admin-cdk-state'), adminCdkCaption: $('#admin-cdk-caption'), adminCdkHint: $('#admin-cdk-hint'),
   issuedEmpty: $('#issued-empty'), issuedBundles: $('#issued-bundles'), copyAllBundles: $('#copy-all-bundles'),
   promoTotal: $('#promo-total'), promoAvailable: $('#promo-available'), promoAssigned: $('#promo-assigned'), promoSold: $('#promo-sold'), promoForm: $('#promo-import-form'), promoBatch: $('#promo-batch'), promoText: $('#promo-text'), promoFile: $('#promo-file'), promoFileLabel: $('#promo-file-label'), clearPromoFile: $('#clear-promo-file'), promoImportButton: $('#promo-import-button'), promoImportStatus: $('#promo-import-status'), promoTableBody: $('#promo-table-body'), promoResultsCount: $('#promo-results-count'), promoPageSize: $('#promo-page-size'), promoPageInfo: $('#promo-page-info'), promoPrevPage: $('#promo-prev-page'), promoNextPage: $('#promo-next-page'),
@@ -23,7 +23,7 @@ const VIEW_META = {
 };
 const ERROR_MESSAGES = {
   admin_unauthorized: '管理员密码错误，请重新输入。', admin_not_configured: '后台密码尚未配置。', cdk_service_not_configured: 'CDK 服务尚未配置。', cdk_database_error: 'CDK 数据库操作失败。',
-  promo_service_not_configured: '优惠码加密服务尚未配置。', promo_database_error: '优惠码数据库操作失败。', invalid_promo_import: '导入内容无效或数量超过限制。', no_valid_promo_codes: '没有识别到有效的优惠码或 chatgpt.com/p 链接。', promo_inventory_insufficient: '优惠码库存不足，请先导入后再生成 CDK。', promo_not_found: '优惠码不存在或已删除。',
+  promo_service_not_configured: '优惠码加密服务尚未配置。', promo_database_error: '优惠码数据库操作失败。', invalid_promo_import: '导入内容无效或数量超过限制。', no_valid_promo_codes: '没有识别到有效的优惠码或 chatgpt.com/p 链接。', promo_inventory_insufficient: '优惠码库存不足，请先导入后再生成 CDK。', promo_not_found: '优惠码不存在或已删除。', invalid_cdk_issue_mode: '请选择有效的 CDK 发放方式。',
   invalid_cdk_count: 'CDK 生成数量必须为 1–50。', invalid_cdk_recharge_quantity: '单次充值次数必须为 1–100。', cdk_not_rechargeable: '只能给尚未过期的“仅 CDK 模式”客户充值。', cdk_expired: '该 CDK 已过期，无法充值次数。', cdk_revoked: '该 CDK 已停用，无法充值次数。', cdk_not_found_or_revoked: 'CDK 不存在或已停用。', cdk_not_found: 'CDK 不存在或已删除。',
   proxy_service_not_configured: '代理加密服务尚未配置。', proxy_database_error: '代理数据库操作失败。', invalid_proxy_import: '代理导入格式无效。', invalid_proxy_url: '代理 URL 格式不正确。', unsupported_proxy_protocol: '仅支持 HTTP / HTTPS 代理。', unsupported_country: '国家代码不受支持。', proxy_not_found: '该国家没有已导入的代理。', relay_not_configured: 'Relay 尚未配置。', relay_probe_unreachable: 'Relay 无法连接。', relay_probe_timeout: '代理测试超时。', proxy_test_failed: '代理测试失败。',
 };
@@ -195,10 +195,15 @@ function renderCdks() {
   elements.cdkNextPage.disabled = state.cdkPage >= totalPages;
   if (!records.length) { emptyRow(elements.cdkTableBody, 9, '暂无符合条件的 CDK'); return; }
   records.forEach((record) => {
-    const row = node('tr'); const code = visibleCode(record.code || record.maskedCode, Boolean(record.legacyCode)); const promoLocked = Boolean(record.promoLocked || String(record.promoCode || '').includes('•')); const promo = visibleCode(record.promoCode || '', promoLocked, record.promoSold ? '已使用 · 禁止再次发放' : (record.promoDeleted ? '已删除' : '无法解密')); const type = node('span', `cdk-kind cdk-kind-${record.kind}`, record.kind === 'admin' ? '管理员通用' : '客户'); const progress = node('div', 'progress');
+    const row = node('tr'); const code = visibleCode(record.code || record.maskedCode, Boolean(record.legacyCode)); const promoLocked = Boolean(record.promoLocked || String(record.promoCode || '').includes('•')); const promo = visibleCode(record.promoCode || '', promoLocked, record.promoSold ? '已使用 · 禁止再次发放' : (record.promoDeleted ? '已删除' : '无法解密')); const typeLabel = record.kind === 'admin' ? '管理员通用' : (record.issueMode === 'cdk_only' ? '客户 · 仅 CDK' : '客户 · 含优惠码'); const type = node('span', `cdk-kind cdk-kind-${record.kind}`, typeLabel); const progress = node('div', 'progress');
     if (record.unlimited) progress.append(node('small', '', `无限次 · 已用 ${record.useCount} 次`));
     else if (record.externalMode) { const bar = node('span'); const fill = node('i'); fill.style.width = `${Math.min(100, Math.round((record.externalUseCount / Math.max(1, record.externalUseLimit)) * 100))}%`; bar.append(fill); progress.append(bar, node('small', '', `仅 CDK ${record.externalUseCount}/${record.externalUseLimit} · 总成功 ${record.useCount} 次`)); }
-    else if (record.repeatable) progress.append(node('small', '', `${record.state === 'pending' ? '激活后' : '后台码模式'}可重复 · 已成功 ${record.useCount} 次`));
+    else if (record.repeatable) {
+      const repeatableMode = record.state === 'pending'
+        ? '激活后'
+        : (record.issueMode === 'cdk_only' ? '仅 CDK 模式' : '后台码模式');
+      progress.append(node('small', '', `${repeatableMode}可重复 · 已成功 ${record.useCount} 次`));
+    }
     else { const bar = node('span'); const fill = node('i'); fill.style.width = `${Math.min(100, Math.round((record.useCount / Math.max(1, record.maxUses)) * 100))}%`; bar.append(fill); progress.append(bar, node('small', '', `${record.useCount}/${record.maxUses}`)); }
     const audits = record.checkoutAudits || [];
     const auditView = audits.length ? node('details', 'checkout-audit') : node('span', 'table-muted', '—');
@@ -233,7 +238,19 @@ function updateInventoryHint() {
   elements.cdkInventoryHint.textContent = String(available); elements.cdkInventoryHint.style.color = available ? '' : '#bc3d3d';
 }
 
-function deliveryText(bundle) { return `自助提链：${location.origin}/\nCDK：${bundle.code}\n优惠码：${bundle.promoCode}`; }
+function selectedCdkIssueMode() { return elements.cdkModes.find((input) => input.checked)?.value || 'with_promo'; }
+function updateCdkIssueModeUi() {
+  const withPromo = selectedCdkIssueMode() === 'with_promo';
+  elements.cdkRuleTitle.textContent = withPromo ? '分配优惠码 24 小时 · 客户自有码默认 3 小时 / 3 次' : '24 小时内激活 · 使用客户自有码后默认 3 小时 / 3 次';
+  elements.cdkRuleDetail.textContent = withPromo ? '自有码成功提链后释放原分配码；仅 CDK 模式可在记录操作中充值次数' : '生成时不分配优惠码；客户使用自己的优惠码成功提链后可在记录操作中充值次数';
+  elements.cdkInventoryRow.hidden = !withPromo;
+  elements.cdkCreateButton.textContent = withPromo ? '生成 CDK 并分配优惠码' : '仅生成 CDK';
+}
+function deliveryText(bundle) {
+  const lines = [`自助提链：${location.origin}/`, `CDK：${bundle.code}`];
+  if (bundle.promoCode) lines.push(`优惠码：${bundle.promoCode}`);
+  return lines.join('\n');
+}
 function promoSuffix(value) { return String(value || '').replace(/^•+/, '').slice(-6); }
 function forgetIssuedPromo(record) { const suffix = promoSuffix(record?.maskedCode || record?.code); if (!suffix) return; state.issued = state.issued.filter((bundle) => promoSuffix(bundle.promoCode) !== suffix); renderIssued(); }
 function reconcileIssuedBundles() { const lockedSuffixes = new Set((state.cdks.records || []).filter((record) => record.promoLocked).map((record) => promoSuffix(record.promoCode)).filter(Boolean)); if (!lockedSuffixes.size) return; state.issued = state.issued.filter((bundle) => !lockedSuffixes.has(promoSuffix(bundle.promoCode))); }
@@ -309,7 +326,8 @@ elements.logoutButton.addEventListener('click', logout); elements.menuButton.add
 $$('.nav-item').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view))); $$('[data-open-view]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.openView)));
 elements.refreshButton.addEventListener('click', async () => { setButtonLoading(elements.refreshButton, true, '刷新中…', '刷新数据'); setStatus(elements.globalStatus, '正在刷新全部数据…', 'info'); try { await loadAllData(); setStatus(elements.globalStatus, '数据已刷新。', 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } finally { setButtonLoading(elements.refreshButton, false, '刷新中…', '刷新数据'); } });
 
-elements.cdkForm.addEventListener('submit', async (event) => { event.preventDefault(); setButtonLoading(elements.cdkCreateButton, true, '正在生成…', '生成并分配优惠码'); setStatus(elements.cdkCreateStatus, '正在原子分配优惠码并生成 CDK…', 'info'); try { const result = await adminFetch('/api/admin/cdks', { method: 'POST', body: JSON.stringify({ label: elements.cdkLabel.value.trim(), count: Number(elements.cdkCount.value) }) }); state.issued = result.codes || []; state.cdkPage = 1; renderIssued(); setStatus(elements.cdkCreateStatus, `已生成 ${state.issued.length} 个 CDK：24 小时内激活，激活后 24 小时可重复提链；首次成功使用已绑定优惠码后，两者结束时间将自动对齐。`, 'success'); await loadAllData(); } catch (error) { const data = error.data; const suffix = data?.error === 'promo_inventory_insufficient' ? `（需要 ${data.required}，当前 ${data.available}）` : ''; setStatus(elements.cdkCreateStatus, error.message + suffix, 'error'); } finally { setButtonLoading(elements.cdkCreateButton, false, '正在生成…', '生成并分配优惠码'); } });
+elements.cdkModes.forEach((input) => input.addEventListener('change', updateCdkIssueModeUi));
+elements.cdkForm.addEventListener('submit', async (event) => { event.preventDefault(); const mode = selectedCdkIssueMode(); const withPromo = mode === 'with_promo'; const idleText = withPromo ? '生成 CDK 并分配优惠码' : '仅生成 CDK'; elements.cdkModes.forEach((input) => { input.disabled = true; }); setButtonLoading(elements.cdkCreateButton, true, '正在生成…', idleText); setStatus(elements.cdkCreateStatus, withPromo ? '正在原子分配优惠码并生成 CDK…' : '正在批量生成仅 CDK…', 'info'); try { const result = await adminFetch('/api/admin/cdks', { method: 'POST', body: JSON.stringify({ label: elements.cdkLabel.value.trim(), count: Number(elements.cdkCount.value), mode }) }); state.issued = result.codes || []; state.cdkPage = 1; renderIssued(); setStatus(elements.cdkCreateStatus, withPromo ? `已生成 ${state.issued.length} 个含优惠码 CDK：24 小时内激活，激活后 24 小时可重复提链；首次成功使用已绑定优惠码后，两者结束时间将自动对齐。` : `已生成 ${state.issued.length} 个仅 CDK：未占用优惠码库存；24 小时内激活，客户使用自己的优惠码首次成功提链后按 3 小时 / 3 次规则。`, 'success'); await loadAllData(); } catch (error) { const data = error.data; const suffix = data?.error === 'promo_inventory_insufficient' ? `（需要 ${data.required}，当前 ${data.available}）` : ''; setStatus(elements.cdkCreateStatus, error.message + suffix, 'error'); } finally { elements.cdkModes.forEach((input) => { input.disabled = false; }); setButtonLoading(elements.cdkCreateButton, false, '正在生成…', idleText); updateCdkIssueModeUi(); } });
 elements.adminCdkCreate.addEventListener('click', async () => {
   const existing = activeAdminCdk();
   if (existing && !confirm('重新生成会立即停用当前管理员 CDK。确定继续吗？')) return;
@@ -382,4 +400,4 @@ function focusProxyCountry(code) { elements.proxyCountry.value = code; elements.
 async function testProxy(code, button) { setButtonLoading(button, true, '测试中…', '测试代理'); try { const result = await adminFetch(`/api/admin/proxies/${code}/test`, { method: 'POST' }); setStatus(elements.globalStatus, `${code} 代理正常：出口 ${result.exitIp}，延迟 ${result.latencyMs} ms。`, 'success'); await loadAllData(); } catch (error) { setStatus(elements.globalStatus, `${code}：${error.message}`, 'error'); await loadAllData().catch(() => {}); } finally { if (document.body.contains(button)) setButtonLoading(button, false, '测试中…', '测试代理'); } }
 async function deleteProxy(code) { if (!confirm(`确定删除 ${code} 国家代理吗？删除后该国家无法提链。`)) return; try { await adminFetch(`/api/admin/proxies/${code}`, { method: 'DELETE' }); await loadAllData(); setStatus(elements.globalStatus, `${code} 代理已删除。`, 'success'); } catch (error) { setStatus(elements.globalStatus, error.message, 'error'); } }
 
-renderIssued(); restoreAdminSession();
+updateCdkIssueModeUi(); renderIssued(); restoreAdminSession();

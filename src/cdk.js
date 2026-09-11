@@ -14,6 +14,9 @@ const MAX_CDK_RECHARGE_USES = 100;
 const STANDARD_CDK_REPEATABLE_SENTINEL = 2_147_483_647;
 const CDK_KIND_STANDARD = 'standard';
 const CDK_KIND_ADMIN = 'admin';
+const CDK_ISSUE_MODE_WITH_PROMO = 'with_promo';
+const CDK_ISSUE_MODE_ONLY = 'cdk_only';
+const CDK_ISSUE_MODES = [CDK_ISSUE_MODE_WITH_PROMO, CDK_ISSUE_MODE_ONLY];
 
 export function normalizeCdk(value) {
   const compact = String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -82,6 +85,12 @@ function rowKind(row) {
   return row?.kind === CDK_KIND_ADMIN ? CDK_KIND_ADMIN : CDK_KIND_STANDARD;
 }
 
+function rowIssueMode(row) {
+  return row?.issue_mode === CDK_ISSUE_MODE_ONLY
+    ? CDK_ISSUE_MODE_ONLY
+    : CDK_ISSUE_MODE_WITH_PROMO;
+}
+
 function rowExternalUseLimit(row) {
   const limit = Number(row?.external_use_limit);
   return Number.isInteger(limit) && limit >= EXTERNAL_PROMO_CDK_DEFAULT_USES
@@ -118,6 +127,7 @@ function publicRecord(row, now = new Date(), revealedCode = '', revealedPromo = 
     legacyCode: !revealedCode,
     label: row.label || '',
     kind,
+    issueMode: kind === CDK_KIND_STANDARD ? rowIssueMode(row) : 'admin',
     unlimited,
     repeatable,
     externalMode,
@@ -174,7 +184,7 @@ function resultFromRecord(row, now = new Date()) {
 
 const CDK_SELECT_COLUMNS = `id, code_suffix, label, kind, max_uses, use_count,
   created_at, activated_at, expires_at, revoked_at, deleted_at, last_used_at,
-  external_mode_at, external_use_count, external_use_limit`;
+  external_mode_at, external_use_count, external_use_limit, issue_mode`;
 
 export async function synchronizeCustomerCdkExpiry(env, idValue = null) {
   if (!env?.DB) return unavailableResult();
@@ -501,10 +511,20 @@ export async function createCdks(input, env) {
   const count = parsePositiveInteger(input?.count, 1, MAX_BATCH_SIZE);
   if (count == null) return { ok: false, error: 'invalid_cdk_count', max: MAX_BATCH_SIZE };
 
-  const inventory = await availablePromoCount(env);
-  if (!inventory.ok) return inventory;
-  if (inventory.available < count) {
-    return { ok: false, error: 'promo_inventory_insufficient', available: inventory.available, required: count };
+  const requestedMode = input?.mode == null
+    ? CDK_ISSUE_MODE_WITH_PROMO
+    : input.mode;
+  if (!CDK_ISSUE_MODES.includes(requestedMode)) {
+    return { ok: false, error: 'invalid_cdk_issue_mode', supportedModes: CDK_ISSUE_MODES };
+  }
+  const withPromo = requestedMode === CDK_ISSUE_MODE_WITH_PROMO;
+
+  if (withPromo) {
+    const inventory = await availablePromoCount(env);
+    if (!inventory.ok) return inventory;
+    if (inventory.available < count) {
+      return { ok: false, error: 'promo_inventory_insufficient', available: inventory.available, required: count };
+    }
   }
 
   const label = String(input?.label || '').trim().slice(0, 80);
@@ -517,51 +537,62 @@ export async function createCdks(input, env) {
     const code = randomCdk();
     const codeHash = await hashCdk(code, env.CDK_HASH_PEPPER);
     const encryptedCode = await encryptValue(code, env.PROMO_ENCRYPTION_KEY, 'cdk:' + CDK_KIND_STANDARD);
-    generated.push({ code, codeHash, encryptedCode });
+    const insertIndex = statements.length;
+    generated.push({ code, codeHash, encryptedCode, insertIndex });
     statements.push(
       env.DB.prepare(
         `INSERT INTO cdks
-         (code_hash, code_suffix, label, kind, max_uses, use_count, created_at, expires_at, encrypted_code)
-         VALUES (?1, ?2, ?3, 'standard', 2147483647, 0, ?4, ?5, ?6)`
-      ).bind(codeHash, code.slice(-4), label, createdAt, expiresAt, encryptedCode)
+         (code_hash, code_suffix, label, kind, max_uses, use_count, created_at, expires_at, encrypted_code, issue_mode)
+         VALUES (?1, ?2, ?3, 'standard', 2147483647, 0, ?4, ?5, ?6, ?7)`
+      ).bind(codeHash, code.slice(-4), label, createdAt, expiresAt, encryptedCode, requestedMode)
     );
-    statements.push(
-      env.DB.prepare(
-        `INSERT INTO cdk_promo_assignments (cdk_id, promo_code_id, assigned_at)
-         VALUES (
-           (SELECT id FROM cdks WHERE code_hash = ?1 LIMIT 1),
-           (
-             SELECT p.id FROM promo_codes p
-             WHERE p.deleted_at IS NULL
-               AND p.auto_delete_at IS NULL
-               AND NOT EXISTS (
-                 SELECT 1 FROM cdk_promo_assignments a WHERE a.promo_code_id = p.id
-               )
-             ORDER BY p.id ASC LIMIT 1
-           ),
-           ?2
-         )`
-      ).bind(codeHash, createdAt)
-    );
+    if (withPromo) {
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO cdk_promo_assignments (cdk_id, promo_code_id, assigned_at)
+           VALUES (
+             (SELECT id FROM cdks WHERE code_hash = ?1 LIMIT 1),
+             (
+               SELECT p.id FROM promo_codes p
+               WHERE p.deleted_at IS NULL
+                 AND p.auto_delete_at IS NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM cdk_promo_assignments a WHERE a.promo_code_id = p.id
+                 )
+               ORDER BY p.id ASC LIMIT 1
+             ),
+             ?2
+           )`
+        ).bind(codeHash, createdAt)
+      );
+    }
   }
 
   const insertResults = await env.DB.batch(statements);
-  const assignments = await Promise.all(generated.map((item) => assignedPromoForCdkHash(item.codeHash, env)));
+  const assignments = withPromo
+    ? await Promise.all(generated.map((item) => assignedPromoForCdkHash(item.codeHash, env)))
+    : generated.map((item) => ({
+        ok: true,
+        cdkId: Number(insertResults[item.insertIndex]?.meta?.last_row_id || 0),
+        promoCode: '',
+      }));
   const failedAssignment = assignments.find((assignment) => !assignment.ok);
   if (failedAssignment) return failedAssignment;
   return {
     ok: true,
+    mode: requestedMode,
     codes: generated.map((item, index) => ({
-      id: Number(insertResults[index * 2]?.meta?.last_row_id || assignments[index].cdkId || 0),
+      id: Number(insertResults[item.insertIndex]?.meta?.last_row_id || assignments[index].cdkId || 0),
       code: item.code,
       label,
       kind: CDK_KIND_STANDARD,
+      issueMode: requestedMode,
       unlimited: false,
       repeatable: true,
       maxUses: null,
       activationDeadline: expiresAt,
       expiresAt,
-      promoCode: assignments[index].promoCode,
+      promoCode: assignments[index].promoCode || '',
     })),
   };
 }
@@ -606,7 +637,7 @@ export async function listCdks(env, limitValue = 200) {
   const result = await env.DB.prepare(
     `SELECT c.id, c.code_suffix, c.encrypted_code, c.label, c.kind, c.max_uses, c.use_count, c.created_at,
             c.activated_at, c.expires_at, c.revoked_at, c.deleted_at, c.last_used_at,
-            c.external_mode_at, c.external_use_count, c.external_use_limit,
+            c.external_mode_at, c.external_use_count, c.external_use_limit, c.issue_mode,
             p.code_suffix AS promo_suffix,
             p.encrypted_code AS promo_encrypted_code, p.country AS promo_scope,
             p.auto_delete_at AS promo_auto_delete_at, p.deleted_at AS promo_deleted_at

@@ -8,6 +8,7 @@ const cdkExpiryMigration = await readFile(new URL('../migrations/0007_align_cust
 const externalPromoReleaseMigration = await readFile(new URL('../migrations/0009_release_external_cdk_promos.sql', import.meta.url), 'utf8');
 const externalUseLimitMigration = await readFile(new URL('../migrations/0010_add_external_use_limit.sql', import.meta.url), 'utf8');
 const cdkAccountBindingMigration = await readFile(new URL('../migrations/0011_bind_cdk_account_email.sql', import.meta.url), 'utf8');
+const cdkIssueModeMigration = await readFile(new URL('../migrations/0012_add_cdk_issue_mode.sql', import.meta.url), 'utf8');
 
 class MemoryStatement {
   constructor(database, query) {
@@ -342,7 +343,7 @@ class MemoryStatement {
 
     if (this.query.startsWith('INSERT INTO cdks')) {
       const admin = this.query.includes("'admin'");
-      const [codeHash, codeSuffix, label, createdAt, standardExpiryOrEncrypted, standardEncrypted] = this.values;
+      const [codeHash, codeSuffix, label, createdAt, standardExpiryOrEncrypted, standardEncrypted, standardIssueMode] = this.values;
       const expiresAt = admin ? null : standardExpiryOrEncrypted;
       const encryptedCode = admin ? standardExpiryOrEncrypted : standardEncrypted;
       const id = this.database.nextId++;
@@ -365,6 +366,7 @@ class MemoryStatement {
         external_use_count: 0,
         external_use_limit: 3,
         bound_email_hash: null,
+        issue_mode: admin ? 'with_promo' : (standardIssueMode || 'with_promo'),
       });
       return { meta: { changes: 1, last_row_id: id } };
     }
@@ -484,6 +486,11 @@ test('external use limit migration gives existing CDKs the default three-use all
 test('CDK account binding migration stores only an email fingerprint', () => {
   assert.match(cdkAccountBindingMigration, /bound_email_hash TEXT/);
   assert.doesNotMatch(cdkAccountBindingMigration, /bound_email(?!_hash)/);
+});
+
+test('CDK issue mode migration defaults historical records and constrains new values', () => {
+  assert.match(cdkIssueModeMigration, /issue_mode TEXT NOT NULL DEFAULT 'with_promo'/);
+  assert.match(cdkIssueModeMigration, /CHECK \(issue_mode IN \('with_promo', 'cdk_only'\)\)/);
 });
 
 async function adminRequest(env, path, options = {}) {
@@ -855,6 +862,8 @@ test('CDK generation atomically assigns distinct global promo codes and exposes 
   const issueText = await issueResponse.text();
   const issued = JSON.parse(issueText);
   assert.equal(issueResponse.status, 201);
+  assert.equal(issued.mode, 'with_promo');
+  assert.equal(issued.codes.every((record) => record.issueMode === 'with_promo'), true);
   assert.equal(new Set(issued.codes.map((record) => record.promoCode)).size, 2);
   assert.deepEqual(new Set(issued.codes.map((record) => record.promoCode)), new Set(promos));
   assert.equal(issued.codes.every((record) => record.maxUses === null && record.repeatable === true), true);
@@ -865,6 +874,7 @@ test('CDK generation atomically assigns distinct global promo codes and exposes 
   const listText = await listResponse.text();
   const list = JSON.parse(listText);
   assert.equal(list.records.every((record) => record.kind === 'standard'), true);
+  assert.equal(list.records.every((record) => record.issueMode === 'with_promo'), true);
   assert.equal(list.records.every((record) => record.maxUses === null && record.repeatable === true), true);
   assert.equal(list.records.every((record) => record.state === 'pending'), true);
   assert.equal(listText.includes('AAAAAAAAAAAAAAA1'), true);
@@ -872,6 +882,58 @@ test('CDK generation atomically assigns distinct global promo codes and exposes 
   assert.equal(list.records.every((record) => record.legacyCode === false), true);
   assert.equal(env.DB.rows.every((record) => record.encrypted_code.startsWith('v1.')), true);
   assert.equal(env.DB.rows.some((record) => issued.codes.some((item) => record.encrypted_code.includes(item.code))), false);
+});
+
+test('explicit with-promo generation consumes inventory and persists its issue mode', async () => {
+  const env = createEnv();
+  await issueCdk(env, { mode: 'with_promo' });
+
+  assert.equal(env.DB.rows[0].issue_mode, 'with_promo');
+  assert.equal(env.DB.assignmentRows.length, 1);
+  const inventoryResponse = await adminRequest(env, '/api/admin/promos?state=available');
+  assert.equal((await inventoryResponse.json()).stats.available, 0);
+});
+
+test('CDK-only generation works in batches with zero inventory and creates no assignments', async () => {
+  const env = createEnv();
+  const beforeInventory = await adminRequest(env, '/api/admin/promos?state=available');
+  assert.equal((await beforeInventory.json()).stats.available, 0);
+
+  const response = await adminRequest(env, '/api/admin/cdks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ count: 3, label: 'customer-owned promos', mode: 'cdk_only' }),
+  });
+  const data = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(data.mode, 'cdk_only');
+  assert.equal(data.codes.length, 3);
+  assert.equal(data.codes.every((record) => record.issueMode === 'cdk_only' && record.promoCode === ''), true);
+  assert.equal(env.DB.rows.every((record) => record.issue_mode === 'cdk_only'), true);
+  assert.equal(env.DB.assignmentRows.length, 0);
+  const afterInventory = await adminRequest(env, '/api/admin/promos?state=available');
+  assert.equal((await afterInventory.json()).stats.available, 0);
+
+  const listResponse = await adminRequest(env, '/api/admin/cdks?limit=20');
+  const list = await listResponse.json();
+  assert.equal(list.records.length, 3);
+  assert.equal(list.records.every((record) => record.issueMode === 'cdk_only' && record.promoCode === ''), true);
+});
+
+test('invalid CDK issue mode is rejected before writing data', async () => {
+  const env = createEnv();
+  const response = await adminRequest(env, '/api/admin/cdks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ count: 2, mode: 'promo_optional' }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, 'invalid_cdk_issue_mode');
+  assert.equal(env.DB.rows.length, 0);
+  assert.equal(env.DB.assignmentRows.length, 0);
+  assert.equal(env.DB.promoRows.length, 0);
 });
 
 test('CDK generation fails without partially creating records when promo inventory is insufficient', async () => {

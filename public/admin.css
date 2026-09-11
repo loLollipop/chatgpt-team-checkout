@@ -154,6 +154,17 @@ a { color: inherit; text-decoration: none; }
 .fixed-rule > div { display: grid; gap: 3px; }
 .fixed-rule b { font-size: 9px; }
 .fixed-rule small { color: var(--muted); font-size: 7px; line-height: 1.45; }
+.cdk-mode-picker { min-width: 0; margin: 0; padding: 0; border: 0; }
+.cdk-mode-picker legend { margin-bottom: 7px; color: #34403c; font-size: 14px; font-weight: 750; }
+.cdk-mode-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.cdk-mode-option { position: relative; min-width: 0; cursor: pointer; }
+.cdk-mode-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.cdk-mode-option > span { display: grid; min-height: 72px; align-content: center; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfb; transition: border-color .15s, background .15s, box-shadow .15s; }
+.cdk-mode-option b { font-size: 13px; }
+.cdk-mode-option small { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.45; }
+.cdk-mode-option input:checked + span { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.cdk-mode-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cdk-mode-option input:disabled + span { cursor: wait; opacity: .6; }
 .cdk-control-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 18px; }
 .cdk-control-card { display: flex; min-height: 410px; flex-direction: column; padding: 24px; }
 .cdk-control-card .panel-heading { min-height: 74px; margin-bottom: 24px; }
@@ -409,6 +420,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .table-panel { padding: 0; }
   .cdk-control-card { padding: 19px; }
   .cdk-control-card .panel-heading { min-height: 0; margin-bottom: 19px; }
+  .cdk-mode-options { grid-template-columns: 1fr; }
   .admin-cdk-result { grid-template-columns: 1fr; }
   .admin-cdk-result button { width: 100%; }
   .admin-access-meta { grid-template-columns: 1fr; }

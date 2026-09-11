@@ -73,14 +73,21 @@
           <section class="view" data-view-panel="cdks" hidden>
             <div class="cdk-control-grid">
               <section class="panel cdk-control-card cdk-issue-card">
-                <div class="panel-heading"><div><span class="eyebrow">Customer access</span><h3>生成客户 CDK</h3><p>填写交付信息，系统会自动分配一条全球优惠码。</p></div><span class="control-card-index">01</span></div>
+                <div class="panel-heading"><div><span class="eyebrow">Customer access</span><h3>生成客户 CDK</h3><p>选择交付方式并填写内部交付信息。</p></div><span class="control-card-index">01</span></div>
                 <form id="cdk-create-form" class="admin-form" novalidate>
+                  <fieldset class="cdk-mode-picker">
+                    <legend>发放方式</legend>
+                    <div class="cdk-mode-options">
+                      <label class="cdk-mode-option"><input id="cdk-mode-with-promo" type="radio" name="cdk-issue-mode" value="with_promo" checked /><span><b>CDK + 优惠码</b><small>带码自动占用一条库存优惠码</small></span></label>
+                      <label class="cdk-mode-option"><input id="cdk-mode-only" type="radio" name="cdk-issue-mode" value="cdk_only" /><span><b>仅生成 CDK</b><small>仅 CDK 不占用库存，适合客户使用自己的优惠码</small></span></label>
+                    </div>
+                  </fieldset>
                   <div class="form-row">
                     <label>内部备注<input id="cdk-label" type="text" maxlength="80" placeholder="例如：客户 A / 订单号" /></label>
                     <label>生成数量<input id="cdk-count" type="number" min="1" max="50" value="1" /></label>
                   </div>
-                  <div class="fixed-rule"><span>固定规则</span><div><b>分配优惠码 24 小时 · 客户自有码默认 3 小时 / 3 次</b><small>自有码成功提链后释放原分配码；仅 CDK 模式可在记录操作中充值次数 · 当前全球库存 <strong id="cdk-inventory-hint">—</strong> 条</small></div></div>
-                  <div class="control-card-actions"><button id="cdk-create-button" class="button button-primary" type="submit">生成并分配优惠码</button><div id="cdk-create-status" class="status" role="status" aria-live="polite"></div></div>
+                  <div class="fixed-rule"><span>固定规则</span><div><b id="cdk-rule-title">分配优惠码 24 小时 · 客户自有码默认 3 小时 / 3 次</b><small id="cdk-rule-detail">自有码成功提链后释放原分配码；仅 CDK 模式可在记录操作中充值次数</small><small id="cdk-inventory-row">当前全球库存 <strong id="cdk-inventory-hint">—</strong> 条</small></div></div>
+                  <div class="control-card-actions"><button id="cdk-create-button" class="button button-primary" type="submit">生成 CDK 并分配优惠码</button><div id="cdk-create-status" class="status" role="status" aria-live="polite"></div></div>
                 </form>
               </section>
 
@@ -97,7 +104,7 @@
                 <div class="control-card-actions"><button id="admin-cdk-create" class="button button-dark" type="button">生成管理员通用 CDK</button><div id="admin-cdk-status" class="status" role="status" aria-live="polite"></div></div>
               </section>
             </div>
-            <section class="panel issued-panel"><div class="panel-heading"><div><span class="eyebrow">Delivery preview</span><h3>本次客户 CDK 交付结果</h3><p>生成后可一键复制“自助提链 / CDK / 优惠码”完整交付文本。</p></div><button id="copy-all-bundles" class="button button-secondary button-small" type="button" hidden>复制全部</button></div><div id="issued-empty" class="empty-state"><span>◇</span><b>还没有新生成的客户 CDK</b><p>完成上方客户 CDK 表单后，交付结果会显示在这里。</p></div><div id="issued-bundles" class="issued-bundles"></div></section>
+            <section class="panel issued-panel"><div class="panel-heading"><div><span class="eyebrow">Delivery preview</span><h3>本次客户 CDK 交付结果</h3><p>生成后可按发放方式一键复制完整交付文本。</p></div><button id="copy-all-bundles" class="button button-secondary button-small" type="button" hidden>复制全部</button></div><div id="issued-empty" class="empty-state"><span>◇</span><b>还没有新生成的客户 CDK</b><p>完成上方客户 CDK 表单后，交付结果会显示在这里。</p></div><div id="issued-bundles" class="issued-bundles"></div></section>
             <section class="panel table-panel">
               <div class="panel-heading table-heading">
                 <div><span class="eyebrow">Access records</span><h3>CDK 可视化记录</h3><p>支持搜索、状态筛选与分页；删除不会回收已分配优惠码。</p></div>
